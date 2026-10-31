@@ -1,0 +1,54 @@
+# rss-to-feishu 配置样例：复制为 config.toml 并填上真实值（config.toml 不入库）。
+# 所有必填字段缺失会在启动时报错。
+
+# sqlite 数据库文件
+database_path = "db.sqlite3"
+
+# 摘要用的 LLM（OpenAI 兼容接口）
+[llm]
+api_base = "http://llm.i.villv.tech/v1"
+api_key = "your-api-key"
+model = "brainllm"
+
+# 网页正文抓取服务（zhuazhua）
+[zhuazhua]
+url = "http://127.0.0.1:18620"
+# 服务端配置了 SCRAPER_API_TOKEN 时才需要
+# api_token = ""
+
+# 订阅源抓取（可选，以下为缺省值）
+[sync]
+concurrency = 8
+timeout_secs = 60
+# 出口代理；缺省回退到 https_proxy / http_proxy 环境变量
+# proxy = "http://127.0.0.1:10809"
+
+# 飞书渠道数组：type = "tenant"（自建应用）或 "webhook"（群机器人）。
+# tags 是标签白名单：非空时只推送带这些标签（任一命中）的条目；留空接收全部。
+[[channels]]
+name = "default"
+type = "tenant"
+app_id = "cli_xxx"
+app_secret = "yyy"
+chat_id = "oc_xxx"
+tags = []
+# base_url = "https://open.feishu.cn"
+
+# [[channels]]
+# name = "tech"
+# type = "tenant"
+# app_id = "cli_xxx"
+# app_secret = "yyy"
+# chat_id = "oc_yyy"
+# tags = ["rust", "blog"]
+
+# [[channels]]
+# name = "webhook-demo"
+# type = "webhook"
+# url = "https://open.feishu.cn/open-apis/bot/v2/hook/xxxx"
+# tags = ["fun"]
+
+# 订阅源：URL -> 标签。URL 带 direct+ 前缀表示正文直读（push 时经 zhuazhua 抓全文）。
+[feeds]
+"https://example.com/feed.xml" = ["blog"]
+"direct+https://example.org/rss" = ["rust"]

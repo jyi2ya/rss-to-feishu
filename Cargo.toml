@@ -1,0 +1,29 @@
+[package]
+name = "rss-to-feishu"
+version = "0.1.0"
+edition = "2024"
+description = "RSS/Atom 订阅聚合，经 LLM 摘要后推送到飞书群"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+csv = "1"
+feed-rs = "2"
+flate2 = "1"
+futures = "0.3"
+larksuite-oapi-sdk-rs = "0.3.13"
+md-5 = "0.10"
+percent-encoding = "2"
+progenitor = "0.11.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rig-core = "0.10"
+schemars = { version = "0.8", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs"] }
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

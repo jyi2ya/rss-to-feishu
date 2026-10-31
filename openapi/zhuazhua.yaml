@@ -1,0 +1,62 @@
+openapi: 3.0.3
+info:
+  title: Zhuazhua URL-to-Markdown fetch API (DeepSeek Search API compatible)
+  version: "1.0"
+paths:
+  /v1/tools/fetch:
+    post:
+      operationId: fetchUrl
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FetchRequest"
+      responses:
+        "2XX":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FetchResponse"
+        default:
+          description: OpenAI-compatible error envelope
+          x-error: true
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    FetchRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+    FetchResponse:
+      type: object
+      required: [title, content]
+      properties:
+        title:
+          type: string
+        content:
+          type: string
+          description: The page rendered as Markdown
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message, type]
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+            param:
+              type: string
+              nullable: true
+            code:
+              type: string
