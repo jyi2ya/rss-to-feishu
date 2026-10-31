@@ -1,6 +1,8 @@
 //! `push` 子命令：把 pending 条目经 LLM 摘要后推到配置的飞书渠道。
 //!
-//! 发送全部 pending 条目（可用 `--limit` 限量），失败条目标记为 failed 并记录原因。
+//! 发送全部 pending 条目（可用 `--limit` 限量）。失败按阶段落入不同状态：
+//! LLM 提取失败 -> `failed_llm`，摘要成功但渠道投递失败 -> `failed_send`，
+//! 其余（正文抓取失败、无匹配渠道等）-> `failed`。
 
 use anyhow::{Context, Result};
 use larksuite_oapi_sdk_rs::{LarkClient, RequestOption, service::im::v1::CreateMessageReqBody};
@@ -10,9 +12,58 @@ use tracing::{info, warn};
 use crate::{
     clients,
     config::{Channel, Config},
-    db::{self, PendingItem, STATUS_FAILED, STATUS_PENDING, STATUS_SENT},
+    db::{
+        self, PendingItem, STATUS_FAILED, STATUS_FAILED_LLM, STATUS_FAILED_SEND, STATUS_PENDING,
+        STATUS_SENT,
+    },
     llm::{Preview, Summarizer},
 };
+
+/// push 过程中失败发生的阶段，决定条目落入哪个失败状态。
+enum FailureStage {
+    Llm,
+    Send,
+    Other,
+}
+
+impl FailureStage {
+    fn status(&self) -> &'static str {
+        match self {
+            FailureStage::Llm => STATUS_FAILED_LLM,
+            FailureStage::Send => STATUS_FAILED_SEND,
+            FailureStage::Other => STATUS_FAILED,
+        }
+    }
+}
+
+/// 带失败阶段的错误，run 里据此写库。
+struct ItemError {
+    stage: FailureStage,
+    source: anyhow::Error,
+}
+
+impl ItemError {
+    fn llm(e: anyhow::Error) -> Self {
+        Self {
+            stage: FailureStage::Llm,
+            source: e,
+        }
+    }
+
+    fn send(e: anyhow::Error) -> Self {
+        Self {
+            stage: FailureStage::Send,
+            source: e,
+        }
+    }
+
+    fn other(e: anyhow::Error) -> Self {
+        Self {
+            stage: FailureStage::Other,
+            source: e,
+        }
+    }
+}
 
 pub async fn run(config: &Config, limit: Option<usize>) -> Result<bool> {
     let pool = db::connect(&config.database_path).await?;
@@ -50,8 +101,14 @@ pub async fn run(config: &Config, limit: Option<usize>) -> Result<bool> {
             Ok(()) => sent += 1,
             Err(e) => {
                 failed += 1;
-                warn!("item {} failed: {e:#}", item.id);
-                mark_failed(&pool, &item.id, &format!("{e:#}")).await?;
+                warn!("item {} failed: {:#}", item.id, e.source);
+                mark_failed(
+                    &pool,
+                    &item.id,
+                    e.stage.status(),
+                    &format!("{:#}", e.source),
+                )
+                .await?;
             }
         }
     }
@@ -65,21 +122,30 @@ async fn process_item(
     zhuazhua: &clients::zhuazhua::Client,
     config: &Config,
     item: &PendingItem,
-) -> Result<()> {
-    let content = build_content(zhuazhua, item).await?;
-    let preview = summarizer.preview(&content).await?;
+) -> Result<(), ItemError> {
+    let content = build_content(zhuazhua, item)
+        .await
+        .map_err(ItemError::other)?;
+    let preview = summarizer.preview(&content).await.map_err(ItemError::llm)?;
     let rendered = render_message(&preview, item);
     let content_json = serde_json::to_string(&serde_json::json!({ "text": rendered }))
-        .context("encode message")?;
+        .map_err(|e| ItemError::other(anyhow::anyhow!(e)))?;
 
     // 渠道按配置顺序取首个白名单命中的；白名单为空的渠道兜底。
     let channel = config
         .channels
         .iter()
         .find(|channel| tags_match(channel.tags(), &item.source_tags))
-        .with_context(|| format!("no channel matches tags {:?}", item.source_tags))?;
+        .ok_or_else(|| {
+            ItemError::other(anyhow::anyhow!(
+                "no channel matches tags {:?}",
+                item.source_tags
+            ))
+        })?;
 
-    send_to_channel(channel, &content_json).await?;
+    send_to_channel(channel, &content_json)
+        .await
+        .map_err(ItemError::send)?;
     info!("item {} sent to {}", item.id, channel.name());
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -90,17 +156,17 @@ async fn process_item(
     .bind(&now)
     .bind(&preview.title)
     .bind(&preview.preview)
-    .bind(serde_json::to_string(&preview.tags).context("encode tags")?)
+    .bind(serde_json::to_string(&preview.tags).map_err(|e| ItemError::other(anyhow::anyhow!(e)))?)
     .bind(&item.id)
     .execute(pool)
     .await
-    .context("mark item sent")?;
+    .map_err(|e| ItemError::other(anyhow::anyhow!(e)))?;
     Ok(())
 }
 
-async fn mark_failed(pool: &SqlitePool, id: &str, error: &str) -> Result<()> {
+async fn mark_failed(pool: &SqlitePool, id: &str, status: &str, error: &str) -> Result<()> {
     sqlx::query("UPDATE items SET status = ?, error = ? WHERE id = ?")
-        .bind(STATUS_FAILED)
+        .bind(status)
         .bind(error)
         .bind(id)
         .execute(pool)

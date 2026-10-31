@@ -42,9 +42,13 @@ rss-to-feishu --config config.toml push --limit 10
 
 # 迁移旧版 rss-feishu-bridge 的 db（旧项目目录内含 db/*.csv 与 db.jsonl）
 rss-to-feishu --config config.toml migrate --from /path/to/old/bridge
+
+# 查看条目状态统计（默认 ASCII 表格，--json 输出机器可读 JSON）
+rss-to-feishu --config config.toml status
+rss-to-feishu --config config.toml status --json
 ```
 
-`push` 单个条目失败会标记为 `failed` 并记录原因（不重试），存在失败时退出码为 2。
+`push` 失败按阶段落入不同状态：LLM 提取失败 -> `failed_llm`，摘要成功但渠道投递失败 -> `failed_send`，其余（正文抓取失败、无匹配渠道等）-> `failed`；都不重试，存在失败时退出码为 2。`status` 展示同步总数、待投递、投递成功、LLM 总结失败、投递失败、其他失败六项。
 
 ## 调度
 

@@ -47,6 +47,10 @@ pub struct PendingItem {
 pub const STATUS_PENDING: &str = "pending";
 pub const STATUS_SENT: &str = "sent";
 pub const STATUS_FAILED: &str = "failed";
+/// LLM 结构化提取失败。
+pub const STATUS_FAILED_LLM: &str = "failed_llm";
+/// 摘要成功但渠道投递失败。
+pub const STATUS_FAILED_SEND: &str = "failed_send";
 
 pub async fn connect(path: &Path) -> Result<SqlitePool> {
     let options = SqliteConnectOptions::new()
@@ -137,4 +141,14 @@ pub async fn all_ids(pool: &SqlitePool) -> Result<std::collections::HashSet<Stri
         .await
         .context("load existing ids")?;
     Ok(ids.into_iter().collect())
+}
+
+/// 各状态的条目计数，供 status 子命令使用。
+pub async fn count_by_status(pool: &SqlitePool) -> Result<std::collections::BTreeMap<String, i64>> {
+    let rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT status, COUNT(*) FROM items GROUP BY status")
+            .fetch_all(pool)
+            .await
+            .context("count items by status")?;
+    Ok(rows.into_iter().collect())
 }

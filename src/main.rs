@@ -3,7 +3,8 @@
 //! 子命令：
 //! - `sync`：抓取 config.toml 里的订阅源，新条目入队；
 //! - `push`：摘要并推送全部 pending 条目（`--limit N` 限量）；
-//! - `migrate`：把旧版 rss-feishu-bridge 的 db 迁进 sqlite。
+//! - `migrate`：把旧版 rss-feishu-bridge 的 db 迁进 sqlite；
+//! - `status`：查看条目状态统计（ASCII 表格或 JSON）。
 
 mod clients;
 mod config;
@@ -12,6 +13,7 @@ mod legacy;
 mod llm;
 mod migrate;
 mod push;
+mod status;
 mod sync;
 
 use std::path::PathBuf;
@@ -51,6 +53,12 @@ enum Command {
         #[arg(long)]
         from: PathBuf,
     },
+    /// 查看当前条目状态统计
+    Status {
+        /// 输出 JSON（供机器读取），缺省输出 ASCII 表格
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -72,6 +80,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Migrate { from } => migrate::run(&config, &from).await?,
+        Command::Status { json } => status::run(&config, json).await?,
     }
     Ok(())
 }
