@@ -11,8 +11,10 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 csv = "1"
 feed-rs = "2"
+figment = { version = "0.10.19", features = ["toml"] }
 flate2 = "1"
 futures = "0.3"
+garde = { version = "0.23.0", features = ["derive"] }
 larksuite-oapi-sdk-rs = "0.3.13"
 md-5 = "0.10"
 percent-encoding = "2"
