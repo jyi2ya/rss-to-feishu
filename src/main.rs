@@ -73,12 +73,7 @@ async fn main() -> Result<()> {
     let config = config::Config::load(&cli.config)?;
     match cli.command {
         Command::Sync => sync::run(&config).await?,
-        Command::Push { limit } => {
-            let any_failed = push::run(&config, limit).await?;
-            if any_failed {
-                std::process::exit(2);
-            }
-        }
+        Command::Push { limit } => push::run(&config, limit).await?,
         Command::Migrate { from } => migrate::run(&config, &from).await?,
         Command::Status { json } => status::run(&config, json).await?,
     }

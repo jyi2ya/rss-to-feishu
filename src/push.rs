@@ -65,7 +65,7 @@ impl ItemError {
     }
 }
 
-pub async fn run(config: &Config, limit: Option<usize>) -> Result<bool> {
+pub async fn run(config: &Config, limit: Option<usize>) -> Result<()> {
     let pool = db::connect(&config.database_path).await?;
     let summarizer = Summarizer::new(&config.llm)?;
     let zhuazhua = clients::zhuazhua_client(config)?;
@@ -90,7 +90,7 @@ pub async fn run(config: &Config, limit: Option<usize>) -> Result<bool> {
 
     if items.is_empty() {
         info!("no pending items");
-        return Ok(false);
+        return Ok(());
     }
     info!("pushing {} pending items", items.len());
 
@@ -113,7 +113,10 @@ pub async fn run(config: &Config, limit: Option<usize>) -> Result<bool> {
         }
     }
     info!("push done: {sent} sent, {failed} failed");
-    Ok(failed > 0)
+    if failed > 0 {
+        anyhow::bail!("push finished with {failed} failed item(s)");
+    }
+    Ok(())
 }
 
 async fn process_item(
