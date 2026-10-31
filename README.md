@@ -48,7 +48,7 @@ rss-to-feishu --config config.toml status
 rss-to-feishu --config config.toml status --json
 ```
 
-`push` 失败按阶段落入不同状态：LLM 提取失败 -> `failed_llm`，摘要成功但渠道投递失败 -> `failed_send`，其余（正文抓取失败、无匹配渠道等）-> `failed`；都不重试，存在失败时命令以错误退出。`status` 展示同步总数、待投递、投递成功、LLM 总结失败、投递失败、其他失败六项。
+`push` 失败按出错点落入不同状态（由 thiserror 定义、strum 生成状态字符串）：正文抓取失败 -> `failed_fetch`，LLM 提取失败 -> `failed_llm`，摘要成功但渠道投递失败 -> `failed_send`，其余（消息编码、无匹配渠道等）-> `failed_other`；都不重试，存在失败时命令以错误退出。`status` 展示同步总数、待投递、投递成功、正文抓取失败、LLM 总结失败、投递失败、其他失败七项。
 
 ## 调度
 

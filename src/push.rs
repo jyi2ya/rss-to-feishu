@@ -1,67 +1,63 @@
 //! `push` 子命令：把 pending 条目经 LLM 摘要后推到配置的飞书渠道。
 //!
-//! 发送全部 pending 条目（可用 `--limit` 限量）。失败按阶段落入不同状态：
-//! LLM 提取失败 -> `failed_llm`，摘要成功但渠道投递失败 -> `failed_send`，
-//! 其余（正文抓取失败、无匹配渠道等）-> `failed`。
+//! 发送全部 pending 条目（可用 `--limit` 限量）。失败按出错点落入不同状态，
+//! 状态字符串由 strum 从 `ItemError` variant 名生成（snake_case）。
 
 use anyhow::{Context, Result};
 use larksuite_oapi_sdk_rs::{LarkClient, RequestOption, service::im::v1::CreateMessageReqBody};
 use sqlx::SqlitePool;
+use strum::AsRefStr;
+use thiserror::Error;
 use tracing::{info, warn};
 
 use crate::{
     clients,
     config::{Channel, Config},
-    db::{
-        self, PendingItem, STATUS_FAILED, STATUS_FAILED_LLM, STATUS_FAILED_SEND, STATUS_PENDING,
-        STATUS_SENT,
-    },
+    db::{self, PendingItem, STATUS_PENDING, STATUS_SENT},
     llm::{Preview, Summarizer},
 };
 
-/// push 过程中失败发生的阶段，决定条目落入哪个失败状态。
-enum FailureStage {
-    Llm,
-    Send,
-    Other,
+/// push 过程中的失败类型：variant 名（snake_case）就是落库的状态字符串。
+#[derive(Debug, Error, AsRefStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ItemError {
+    /// 正文抓取失败（direct 条目经 zhuazhua 抓全文）。
+    #[error("content fetch failed: {0:#}")]
+    FailedFetch(anyhow::Error),
+    /// LLM 结构化提取失败。
+    #[error("llm structured extraction failed: {0:#}")]
+    FailedLlm(anyhow::Error),
+    /// 摘要成功但渠道投递失败。
+    #[error("channel delivery failed: {0:#}")]
+    FailedSend(anyhow::Error),
+    /// 其余失败（消息编码、无匹配渠道、落库错误等）。
+    #[error("{0:#}")]
+    FailedOther(anyhow::Error),
 }
 
-impl FailureStage {
-    fn status(&self) -> &'static str {
-        match self {
-            FailureStage::Llm => STATUS_FAILED_LLM,
-            FailureStage::Send => STATUS_FAILED_SEND,
-            FailureStage::Other => STATUS_FAILED,
-        }
-    }
-}
+/// 状态字符串必须与 db 里的常量一致，防止两处漂移。
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// 带失败阶段的错误，run 里据此写库。
-struct ItemError {
-    stage: FailureStage,
-    source: anyhow::Error,
-}
-
-impl ItemError {
-    fn llm(e: anyhow::Error) -> Self {
-        Self {
-            stage: FailureStage::Llm,
-            source: e,
-        }
-    }
-
-    fn send(e: anyhow::Error) -> Self {
-        Self {
-            stage: FailureStage::Send,
-            source: e,
-        }
-    }
-
-    fn other(e: anyhow::Error) -> Self {
-        Self {
-            stage: FailureStage::Other,
-            source: e,
-        }
+    #[test]
+    fn error_variant_maps_to_status() {
+        assert_eq!(
+            ItemError::FailedFetch(anyhow::anyhow!("x")).as_ref(),
+            db::STATUS_FAILED_FETCH
+        );
+        assert_eq!(
+            ItemError::FailedLlm(anyhow::anyhow!("x")).as_ref(),
+            db::STATUS_FAILED_LLM
+        );
+        assert_eq!(
+            ItemError::FailedSend(anyhow::anyhow!("x")).as_ref(),
+            db::STATUS_FAILED_SEND
+        );
+        assert_eq!(
+            ItemError::FailedOther(anyhow::anyhow!("x")).as_ref(),
+            db::STATUS_FAILED_OTHER
+        );
     }
 }
 
@@ -101,14 +97,22 @@ pub async fn run(config: &Config, limit: Option<usize>) -> Result<()> {
             Ok(()) => sent += 1,
             Err(e) => {
                 failed += 1;
-                warn!("item {} failed: {:#}", item.id, e.source);
-                mark_failed(
-                    &pool,
-                    &item.id,
-                    e.stage.status(),
-                    &format!("{:#}", e.source),
-                )
-                .await?;
+                // 按失败类型分别记日志；落库状态由 strum 从 variant 名生成。
+                match &e {
+                    ItemError::FailedFetch(source) => {
+                        warn!("item {} fetch failed: {source:#}", item.id)
+                    }
+                    ItemError::FailedLlm(source) => {
+                        warn!("item {} llm failed: {source:#}", item.id)
+                    }
+                    ItemError::FailedSend(source) => {
+                        warn!("item {} send failed: {source:#}", item.id)
+                    }
+                    ItemError::FailedOther(source) => {
+                        warn!("item {} failed: {source:#}", item.id)
+                    }
+                }
+                mark_failed(&pool, &item.id, e.as_ref(), &format!("{e:#}")).await?;
             }
         }
     }
@@ -128,11 +132,14 @@ async fn process_item(
 ) -> Result<(), ItemError> {
     let content = build_content(zhuazhua, item)
         .await
-        .map_err(ItemError::other)?;
-    let preview = summarizer.preview(&content).await.map_err(ItemError::llm)?;
+        .map_err(ItemError::FailedFetch)?;
+    let preview = summarizer
+        .preview(&content)
+        .await
+        .map_err(ItemError::FailedLlm)?;
     let rendered = render_message(&preview, item);
     let content_json = serde_json::to_string(&serde_json::json!({ "text": rendered }))
-        .map_err(|e| ItemError::other(anyhow::anyhow!(e)))?;
+        .map_err(|e| ItemError::FailedOther(anyhow::Error::new(e)))?;
 
     // 渠道按配置顺序取首个白名单命中的；白名单为空的渠道兜底。
     let channel = config
@@ -140,7 +147,7 @@ async fn process_item(
         .iter()
         .find(|channel| tags_match(channel.tags(), &item.source_tags))
         .ok_or_else(|| {
-            ItemError::other(anyhow::anyhow!(
+            ItemError::FailedOther(anyhow::anyhow!(
                 "no channel matches tags {:?}",
                 item.source_tags
             ))
@@ -148,7 +155,7 @@ async fn process_item(
 
     send_to_channel(channel, &content_json)
         .await
-        .map_err(ItemError::send)?;
+        .map_err(ItemError::FailedSend)?;
     info!("item {} sent to {}", item.id, channel.name());
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -159,11 +166,11 @@ async fn process_item(
     .bind(&now)
     .bind(&preview.title)
     .bind(&preview.preview)
-    .bind(serde_json::to_string(&preview.tags).map_err(|e| ItemError::other(anyhow::anyhow!(e)))?)
+    .bind(serde_json::to_string(&preview.tags).map_err(|e| ItemError::FailedOther(anyhow::Error::new(e)))?)
     .bind(&item.id)
     .execute(pool)
     .await
-    .map_err(|e| ItemError::other(anyhow::anyhow!(e)))?;
+    .map_err(|e| ItemError::FailedOther(anyhow::Error::new(e)))?;
     Ok(())
 }
 

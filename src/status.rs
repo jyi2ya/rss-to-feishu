@@ -8,7 +8,10 @@ use tabled::settings::Style;
 
 use crate::{
     config::Config,
-    db::{self, STATUS_FAILED, STATUS_FAILED_LLM, STATUS_FAILED_SEND, STATUS_PENDING, STATUS_SENT},
+    db::{
+        self, STATUS_FAILED_FETCH, STATUS_FAILED_LLM, STATUS_FAILED_OTHER, STATUS_FAILED_SEND,
+        STATUS_PENDING, STATUS_SENT,
+    },
 };
 
 #[derive(Debug, Serialize)]
@@ -19,11 +22,13 @@ pub struct Status {
     pub pending: i64,
     /// 投递成功。
     pub sent: i64,
+    /// 正文抓取失败（direct 条目）。
+    pub failed_fetch: i64,
     /// LLM 总结失败。
     pub failed_llm: i64,
     /// 总结成功但投递失败。
     pub failed_send: i64,
-    /// 其他失败（正文抓取失败、无匹配渠道等）。
+    /// 其他失败（消息编码、无匹配渠道等）。
     pub failed_other: i64,
 }
 
@@ -35,9 +40,10 @@ pub async fn run(config: &Config, json: bool) -> Result<()> {
         total: counts.values().sum(),
         pending: count(STATUS_PENDING),
         sent: count(STATUS_SENT),
+        failed_fetch: count(STATUS_FAILED_FETCH),
         failed_llm: count(STATUS_FAILED_LLM),
         failed_send: count(STATUS_FAILED_SEND),
-        failed_other: count(STATUS_FAILED),
+        failed_other: count(STATUS_FAILED_OTHER),
     };
 
     if json {
@@ -55,6 +61,7 @@ fn render_table(status: &Status) -> String {
     let total = status.total.to_string();
     let pending = status.pending.to_string();
     let sent = status.sent.to_string();
+    let failed_fetch = status.failed_fetch.to_string();
     let failed_llm = status.failed_llm.to_string();
     let failed_send = status.failed_send.to_string();
     let failed_other = status.failed_other.to_string();
@@ -63,6 +70,7 @@ fn render_table(status: &Status) -> String {
     builder.push_record(["同步总数", &total]);
     builder.push_record(["待投递", &pending]);
     builder.push_record(["投递成功", &sent]);
+    builder.push_record(["正文抓取失败", &failed_fetch]);
     builder.push_record(["LLM 总结失败", &failed_llm]);
     builder.push_record(["投递失败", &failed_send]);
     builder.push_record(["其他失败", &failed_other]);

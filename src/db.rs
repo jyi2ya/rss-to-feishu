@@ -46,11 +46,14 @@ pub struct PendingItem {
 
 pub const STATUS_PENDING: &str = "pending";
 pub const STATUS_SENT: &str = "sent";
-pub const STATUS_FAILED: &str = "failed";
+/// 正文抓取失败（direct 条目经 zhuazhua 抓全文）。
+pub const STATUS_FAILED_FETCH: &str = "failed_fetch";
 /// LLM 结构化提取失败。
 pub const STATUS_FAILED_LLM: &str = "failed_llm";
 /// 摘要成功但渠道投递失败。
 pub const STATUS_FAILED_SEND: &str = "failed_send";
+/// 其余失败（消息编码、无匹配渠道、落库错误等）。
+pub const STATUS_FAILED_OTHER: &str = "failed_other";
 
 pub async fn connect(path: &Path) -> Result<SqlitePool> {
     let options = SqliteConnectOptions::new()
