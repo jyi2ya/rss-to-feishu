@@ -36,7 +36,7 @@ cargo build --release
 # 抓取全部订阅源，新条目入队
 rss-to-feishu --config config.toml sync
 
-# 摘要并推送全部 pending 条目；--limit 限量（分批消化历史积压时有用）
+# 摘要并推送 pending 条目；缺省只推 1 条，--limit 限量（分批消化历史积压时可用）
 rss-to-feishu --config config.toml push
 rss-to-feishu --config config.toml push --limit 10
 

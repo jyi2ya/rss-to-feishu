@@ -46,6 +46,8 @@ tags = []
 # name = "webhook-demo"
 # type = "webhook"
 # url = "https://open.feishu.cn/open-apis/bot/v2/hook/xxxx"
+# # 机器人安全设置里开了“签名校验”时填 secret，发送会自动加签
+# secret = "your-signature-secret"
 # tags = ["fun"]
 
 # 订阅源：URL -> 标签。URL 带 direct+ 前缀表示正文直读（push 时经 zhuazhua 抓全文）。

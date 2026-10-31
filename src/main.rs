@@ -2,7 +2,7 @@
 //!
 //! 子命令：
 //! - `sync`：抓取 config.toml 里的订阅源，新条目入队；
-//! - `push`：摘要并推送全部 pending 条目（`--limit N` 限量）；
+//! - `push`：摘要并推送 pending 条目（缺省 1 条，`--limit N` 限量）；
 //! - `migrate`：把旧版 rss-feishu-bridge 的 db 迁进 sqlite；
 //! - `status`：查看条目状态统计（ASCII 表格或 JSON）。
 
@@ -43,9 +43,9 @@ enum Command {
     Sync,
     /// 摘要并推送队列中的条目
     Push {
-        /// 最多处理多少条（缺省为全部）
-        #[arg(long)]
-        limit: Option<usize>,
+        /// 最多处理多少条
+        #[arg(long, default_value_t = 1)]
+        limit: usize,
     },
     /// 将旧版 rss-feishu-bridge 的 db 迁移到 sqlite
     Migrate {

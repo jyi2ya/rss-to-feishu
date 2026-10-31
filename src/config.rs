@@ -125,6 +125,10 @@ pub enum Channel {
         /// webhook 完整地址，形如 `https://open.feishu.cn/open-apis/bot/v2/hook/<token>`。
         #[garde(length(min = 1))]
         url: String,
+        /// 机器人安全设置的签名密钥；配置后按飞书签名算法追加 timestamp/sign。
+        #[serde(default)]
+        #[garde(length(min = 1))]
+        secret: Option<String>,
         #[serde(default)]
         #[garde(inner(length(min = 1)))]
         tags: Vec<String>,

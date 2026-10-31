@@ -6,13 +6,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use tabled::settings::Style;
 
-use crate::{
-    config::Config,
-    db::{
-        self, STATUS_FAILED_FETCH, STATUS_FAILED_LLM, STATUS_FAILED_OTHER, STATUS_FAILED_SEND,
-        STATUS_PENDING, STATUS_SENT,
-    },
-};
+use crate::{config::Config, db};
 
 #[derive(Debug, Serialize)]
 pub struct Status {
@@ -33,17 +27,17 @@ pub struct Status {
 }
 
 pub async fn run(config: &Config, json: bool) -> Result<()> {
-    let pool = db::connect(&config.database_path).await?;
-    let counts = db::count_by_status(&pool).await?;
+    let pool = db::connect(&config.database_path).await;
+    let counts = db::count_by_status(&pool).await;
     let count = |status: &str| *counts.get(status).unwrap_or(&0);
     let status = Status {
         total: counts.values().sum(),
-        pending: count(STATUS_PENDING),
-        sent: count(STATUS_SENT),
-        failed_fetch: count(STATUS_FAILED_FETCH),
-        failed_llm: count(STATUS_FAILED_LLM),
-        failed_send: count(STATUS_FAILED_SEND),
-        failed_other: count(STATUS_FAILED_OTHER),
+        pending: count(db::Status::Pending.as_ref()),
+        sent: count(db::Status::Sent.as_ref()),
+        failed_fetch: count(db::Status::FailedFetch.as_ref()),
+        failed_llm: count(db::Status::FailedLlm.as_ref()),
+        failed_send: count(db::Status::FailedSend.as_ref()),
+        failed_other: count(db::Status::FailedOther.as_ref()),
     };
 
     if json {

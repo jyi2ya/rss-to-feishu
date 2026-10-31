@@ -10,7 +10,7 @@ use tracing::{info, warn};
 
 use crate::{
     config::Config,
-    db::{self, Item, STATUS_PENDING, STATUS_SENT},
+    db::{self, Item},
     legacy,
 };
 
@@ -29,11 +29,11 @@ struct LegacyEntry {
     sent_at: Option<String>,
     llm_title: Option<String>,
     llm_summary: Option<String>,
-    llm_tags: Option<String>,
+    llm_tags: Vec<String>,
 }
 
 pub async fn run(config: &Config, old_dir: &Path) -> Result<()> {
-    let pool = db::connect(&config.database_path).await?;
+    let pool = db::connect(&config.database_path).await;
     let mut entries: BTreeMap<String, LegacyEntry> = BTreeMap::new();
 
     for (table, is_sent) in [("old_queue", false), ("queue", false), ("sent", true)] {
@@ -46,36 +46,39 @@ pub async fn run(config: &Config, old_dir: &Path) -> Result<()> {
         }
     }
 
-    for (event_type, data, time) in legacy::read_jsonl(old_dir)? {
+    let events = legacy::read_jsonl(old_dir)?;
+    // 旧文件里 update 可能写在 add 之前：先过一遍 add 建立条目，
+    // 再过一遍 send/update 回填状态与摘要。
+    for (event_type, data, time) in &events {
+        if matches!(event_type.as_str(), "add" | "add_old") {
+            apply_jsonl_add(&mut entries, data, *time);
+        }
+    }
+    for (event_type, data, _time) in &events {
         match event_type.as_str() {
-            "add" | "add_old" => apply_jsonl_add(&mut entries, &data, time),
             "send" => {
                 if let Some(entry) = data.as_str().and_then(|id| entries.get_mut(id)) {
                     entry.sent = true;
                 }
             }
-            "update" => apply_jsonl_update(&mut entries, &data),
+            "update" => apply_jsonl_update(&mut entries, data),
             other => warn!("db.jsonl: unknown event type {other:?}, skip"),
         }
     }
 
-    let now = Utc::now().to_rfc3339();
+    let now = Utc::now();
     let mut items = Vec::new();
     for (id, entry) in &entries {
-        let Some(item) = entry.finalize(id, &now) else {
+        let Some(item) = entry.finalize(id, now) else {
             warn!("entry {id}: unusable, skip");
             continue;
         };
         items.push(item);
     }
-    let inserted = db::insert_items(&pool, &items).await?;
+    db::insert_items(&pool, &items).await;
     print_feeds_snippet(old_dir)?;
 
-    info!(
-        "migrate done: {} entries loaded, {} inserted",
-        entries.len(),
-        inserted
-    );
+    info!("migrate done: {} entries loaded", entries.len());
     Ok(())
 }
 
@@ -97,7 +100,7 @@ fn apply_csv_row(entry: &mut LegacyEntry, row: &legacy::CsvRow, is_sent: bool) {
         fill(&mut entry.llm_title, row.get("llm_title"));
         fill(&mut entry.llm_summary, row.get("llm_summary"));
         if let Some(raw) = row.get("llm_tags") {
-            entry.llm_tags = parse_tags_json(raw);
+            entry.llm_tags = parse_tags_json(raw).unwrap_or_default();
         }
     }
 }
@@ -138,49 +141,37 @@ fn apply_jsonl_update(entries: &mut BTreeMap<String, LegacyEntry>, data: &Value)
     fill_json(&mut entry.llm_title, data.get("llm_title"));
     fill_json(&mut entry.llm_summary, data.get("llm_summary"));
     if let Some(tags) = data.get("llm_tags").and_then(Value::as_array) {
-        let tags: Vec<String> = tags
+        entry.llm_tags = tags
             .iter()
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect();
-        if !tags.is_empty()
-            && let Ok(encoded) = serde_json::to_string(&tags)
-        {
-            entry.llm_tags = Some(encoded);
-        }
     }
 }
 
 impl LegacyEntry {
     /// 兜底缺失字段并组装成正式 Item；缺 title/link 的条目无法推送，返回 None。
-    fn finalize(&self, id: &str, now: &str) -> Option<Item> {
+    fn finalize(&self, id: &str, now: DateTime<Utc>) -> Option<Item> {
         let source = self.source.clone().unwrap_or_default();
         let title = self.title.clone().unwrap_or_default();
-        let link = self
-            .link
-            .clone()
-            .filter(|link| !link.is_empty())
-            .unwrap_or_else(|| "[NO LINK]".to_string());
+        let link = self.link.clone().filter(|link| !link.is_empty());
         let enqueued_at = self
             .enqueued_at
-            .clone()
-            .map(|raw| normalize_datetime(&raw))
-            .unwrap_or_else(|| now.to_string());
-        let pub_date = match self.pub_date.clone().filter(|date| !date.trim().is_empty()) {
-            Some(date) => date,
-            None => enqueued_at.clone(),
-        };
+            .as_deref()
+            .and_then(parse_legacy_datetime)
+            .unwrap_or(now);
+        let pub_date = db::sane_pub_date(self.pub_date.as_deref().and_then(parse_legacy_datetime));
         let sent_at = if self.sent {
             Some(
                 self.sent_at
-                    .clone()
-                    .map(|raw| normalize_datetime(&raw))
-                    .unwrap_or_else(|| enqueued_at.clone()),
+                    .as_deref()
+                    .and_then(parse_legacy_datetime)
+                    .unwrap_or(enqueued_at),
             )
         } else {
             None
         };
-        let sort_key = db::compute_sort_key(id, &pub_date, &enqueued_at);
+        let sort_key = db::compute_sort_key(id, pub_date, enqueued_at);
         Some(Item {
             id: id.to_string(),
             source,
@@ -189,17 +180,27 @@ impl LegacyEntry {
             description_text: self.description_text.clone().unwrap_or_default(),
             pub_date,
             is_direct: self.is_direct.unwrap_or(false),
-            source_tags: self.source_tags.clone().unwrap_or_default(),
+            source_tags: db::Tags(
+                self.source_tags
+                    .as_deref()
+                    .map(|tags| {
+                        tags.split('|')
+                            .filter(|tag| !tag.is_empty())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            ),
             enqueued_at,
             sort_key,
             status: if self.sent {
-                STATUS_SENT.to_string()
+                db::Status::Sent
             } else {
-                STATUS_PENDING.to_string()
+                db::Status::Pending
             },
             llm_title: self.llm_title.clone(),
             llm_summary: self.llm_summary.clone(),
-            llm_tags: self.llm_tags.clone(),
+            llm_tags: (!self.llm_tags.is_empty()).then(|| db::Tags(self.llm_tags.clone())),
             sent_at,
             error: None,
         })
@@ -248,9 +249,8 @@ fn fill_json(target: &mut Option<String>, value: Option<&Value>) {
 }
 
 /// 旧 sent 表的 llm_tags 可能混入 perl 序列化垃圾，只接受 JSON 字符串数组。
-fn parse_tags_json(raw: &str) -> Option<String> {
-    let tags: Vec<String> = serde_json::from_str(raw).ok()?;
-    serde_json::to_string(&tags).ok()
+fn parse_tags_json(raw: &str) -> Option<Vec<String>> {
+    serde_json::from_str(raw).ok()
 }
 
 fn epoch_to_rfc3339(epoch: i64) -> String {
@@ -259,17 +259,19 @@ fn epoch_to_rfc3339(epoch: i64) -> String {
         .unwrap_or_else(|| Utc::now().to_rfc3339())
 }
 
-/// 旧库时间串统一成 RFC3339（UTC）。
-fn normalize_datetime(raw: &str) -> String {
+/// 旧库时间串宽松解析：RFC3339 或常见 `YYYY-MM-DD[ HH:MM:SS]`。
+fn parse_legacy_datetime(raw: &str) -> Option<DateTime<Utc>> {
     let raw = raw.trim();
     if raw.is_empty() {
-        return Utc::now().to_rfc3339();
+        return None;
     }
-    if DateTime::parse_from_rfc3339(raw).is_ok() {
-        return raw.to_string();
+    if let Ok(dt) = DateTime::parse_from_rfc3339(raw) {
+        return Some(dt.with_timezone(&Utc));
     }
-    if let Ok(naive) = NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S") {
-        return Utc.from_utc_datetime(&naive).to_rfc3339();
+    for format in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"] {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(raw, format) {
+            return Some(Utc.from_utc_datetime(&naive));
+        }
     }
-    raw.to_string()
+    None
 }
