@@ -30,11 +30,14 @@ pub struct Summarizer {
     extractor: rig::extractor::Extractor<rig::providers::openai::CompletionModel, Preview>,
 }
 
+/// 构造 OpenAI 兼容客户端；本地网关可能不校验 key，缺省传空串。
+fn openai_client(llm: &Llm) -> Client {
+    Client::from_url(llm.api_key.as_deref().unwrap_or(""), llm.api_base.as_str())
+}
+
 impl Summarizer {
     pub fn new(llm: &Llm) -> anyhow::Result<Self> {
-        // 本地网关可能不校验 key，缺省传空串。
-        let client = Client::from_url(llm.api_key.as_deref().unwrap_or(""), llm.api_base.as_str());
-        let extractor = client
+        let extractor = openai_client(llm)
             .extractor::<Preview>(&llm.model)
             .preamble("你是一个文本分析专家。根据给定文段，提取出文段的标题、摘要和关键词，无论文段的语言是什么，你必须使用简体中文编写。")
             .build();
@@ -46,5 +49,38 @@ impl Summarizer {
             .extract(content)
             .await
             .with_context(|| "llm structured extraction failed")
+    }
+}
+
+/// feed 条目完整性判断的结构化结果。
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct FetchSuggestion {
+    #[schemars(
+        description = "抽样条目是否本身即为完整文章。true 表示内容完整可独立阅读；false 表示只是摘要/简介/片段，正文需要打开链接才能读到，建议对该 feed 开启 fetch"
+    )]
+    pub full_articles: bool,
+    #[schemars(description = "判断理由，用简体中文写")]
+    pub reason: String,
+}
+
+/// 持有 feed 完整性判断的 extractor，供 suggest 子命令使用。
+pub struct FeedAdvisor {
+    extractor: rig::extractor::Extractor<rig::providers::openai::CompletionModel, FetchSuggestion>,
+}
+
+impl FeedAdvisor {
+    pub fn new(llm: &Llm) -> anyhow::Result<Self> {
+        let extractor = openai_client(llm)
+            .extractor::<FetchSuggestion>(&llm.model)
+            .preamble("你是一个 RSS feed 分析助手。用户会给你一个 feed 里最新若干条目的标题与正文文本。请判断这些条目本身是否就是完整文章（内容完整、可以独立阅读），还是只是摘要/简介/片段（正文需要打开链接才能读到）。如果多数条目只是摘要，full_articles 应为 false。请使用简体中文。")
+            .build();
+        Ok(Self { extractor })
+    }
+
+    pub async fn suggest(&self, content: &str) -> anyhow::Result<FetchSuggestion> {
+        self.extractor
+            .extract(content)
+            .await
+            .with_context(|| "llm feed judgment failed")
     }
 }

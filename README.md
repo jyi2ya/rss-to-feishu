@@ -46,6 +46,10 @@ rss-to-feishu --config config.toml migrate --from /path/to/old/bridge
 # 查看条目状态统计（默认 ASCII 表格，--json 输出机器可读 JSON）
 rss-to-feishu --config config.toml status
 rss-to-feishu --config config.toml status --json
+
+# 拉取一个 feed，让 LLM 判断条目是否是完整文章、建议是否开启 fetch
+rss-to-feishu --config config.toml suggest "https://example.com/feed.xml"
+rss-to-feishu --config config.toml suggest "https://example.com/feed.xml" --count 10
 ```
 
 `push` 失败按出错点落入不同状态（由 thiserror 定义、strum 生成状态字符串）：正文抓取失败 -> `failed_fetch`，LLM 提取失败 -> `failed_llm`，摘要成功但渠道投递失败 -> `failed_send`，其余（消息编码、无匹配渠道等）-> `failed_other`；都不重试，存在失败时命令以错误退出。`status` 展示同步总数、待投递、投递成功、正文抓取失败、LLM 总结失败、投递失败、其他失败七项。

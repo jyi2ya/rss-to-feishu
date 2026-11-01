@@ -47,7 +47,7 @@ pub async fn run(config: &Config) -> Result<()> {
 /// 抓订阅源时用的 User-Agent，供各 HTTP 客户端复用。
 const USER_AGENT: &str = concat!("rss-to-feishu/", env!("CARGO_PKG_VERSION"));
 
-fn http_client(config: &Config) -> Result<reqwest::Client> {
+pub(crate) fn http_client(config: &Config) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(config.sync.timeout_secs));
@@ -59,7 +59,7 @@ fn http_client(config: &Config) -> Result<reqwest::Client> {
     builder.build().context("build http client")
 }
 
-async fn fetch_feed(
+pub(crate) async fn fetch_feed(
     client: &reqwest::Client,
     url: &url::Url,
     fetch: bool,

@@ -4,7 +4,8 @@
 //! - `sync`：抓取 config.toml 里的订阅源，新条目入队；
 //! - `push`：摘要并推送 pending 条目（缺省 1 条，`--limit N` 限量）；
 //! - `migrate`：把旧版 rss-feishu-bridge 的 db 迁进 sqlite；
-//! - `status`：查看条目状态统计（ASCII 表格或 JSON）。
+//! - `status`：查看条目状态统计（ASCII 表格或 JSON）；
+//! - `suggest`：拉取一个 feed，让 LLM 判断条目是否完整文章、建议是否开启 fetch。
 
 mod channel;
 mod clients;
@@ -15,6 +16,7 @@ mod llm;
 mod migrate;
 mod push;
 mod status;
+mod suggest;
 mod sync;
 
 use std::path::PathBuf;
@@ -60,23 +62,36 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// 拉取一个 feed，让 LLM 判断条目是否完整文章、建议是否开启 fetch
+    Suggest {
+        /// feed 地址
+        url: String,
+        /// 取多少条最新条目参与判断
+        #[arg(long, default_value_t = 5)]
+        count: usize,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    // suggest 是给人看的工具，rig 的 info 日志太吵，只保留 WARN；
+    // RUST_LOG 环境变量仍然优先。
+    let default_filter = match &cli.command {
+        Command::Suggest { .. } => EnvFilter::new("info,rig=warn"),
+        _ => EnvFilter::new("info"),
+    };
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or(default_filter))
         .init();
 
-    let cli = Cli::parse();
     let config = config::Config::load(&cli.config)?;
     match cli.command {
         Command::Sync => sync::run(&config).await?,
         Command::Push { limit } => push::run(&config, limit).await?,
         Command::Migrate { from } => migrate::run(&config, &from).await?,
         Command::Status { json } => status::run(&config, json).await?,
+        Command::Suggest { url, count } => suggest::run(&config, &url, count).await?,
     }
     Ok(())
 }
