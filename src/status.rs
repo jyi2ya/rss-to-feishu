@@ -16,7 +16,7 @@ pub struct Status {
     pub pending: i64,
     /// 投递成功。
     pub sent: i64,
-    /// 正文抓取失败（direct 条目）。
+    /// 正文抓取失败（fetch 条目）。
     pub failed_fetch: i64,
     /// LLM 总结失败。
     pub failed_llm: i64,
@@ -69,6 +69,6 @@ fn render_table(status: &Status) -> String {
     builder.push_record(["投递失败", &failed_send]);
     builder.push_record(["其他失败", &failed_other]);
     let mut table = builder.build();
-    table.with(Style::ascii());
+    let _table = table.with(Style::ascii());
     table.to_string()
 }

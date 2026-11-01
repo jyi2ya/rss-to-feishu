@@ -4,15 +4,17 @@
 //! 状态字符串由 strum 从 `ItemError` variant 名生成（snake_case）。
 
 use anyhow::{Context, Result};
-use larksuite_oapi_sdk_rs::{LarkClient, RequestOption, service::im::v1::CreateMessageReqBody};
 use sqlx::SqlitePool;
 use strum::AsRefStr;
 use thiserror::Error;
 use tracing::{info, warn};
 
 use crate::{
+    channel::{Channel, ChannelConfig},
+    // 只为了方法解析（accepts/send），不占名字。
+    channel::{ChannelImpl as _, Config as _},
     clients,
-    config::{Channel, Config},
+    config::Config,
     db::{self, PendingItem},
     llm::{Preview, Summarizer},
 };
@@ -22,7 +24,7 @@ use crate::{
 #[derive(Debug, Error, AsRefStr)]
 #[strum(serialize_all = "snake_case", prefix = "failed_")]
 pub enum ItemError {
-    /// 正文抓取失败（direct 条目经 zhuazhua 抓全文）。
+    /// 正文抓取失败（fetch 条目经 Fetch 工具抓全文）。
     #[error("content fetch failed: {0:#}")]
     Fetch(anyhow::Error),
     /// LLM 结构化提取失败。
@@ -36,19 +38,14 @@ pub enum ItemError {
     Other(anyhow::Error),
 }
 
-pub async fn run(config: &Config, limit: usize) -> Result<()> {
+pub async fn run(config: &Config, limit: u32) -> Result<()> {
     let pool = db::connect(&config.database_path).await;
     let summarizer = Summarizer::new(&config.llm)?;
-    let zhuazhua = clients::zhuazhua_client(config)?;
+    let search = clients::search_client(config)?;
+    // 启动时把每个渠道配置 build 成运行时实现；tenant 的 token 在这里读取一次。
+    let prepared = prepare_channels(config)?;
 
-    let items: Vec<PendingItem> = sqlx::query_as::<_, PendingItem>(
-        "SELECT * FROM items WHERE status = ? ORDER BY sort_key, enqueued_at LIMIT ?",
-    )
-    .bind(db::Status::Pending.as_ref())
-    .bind(limit as i64)
-    .fetch_all(&pool)
-    .await
-    .expect("加载待推送条目失败，无法继续");
+    let items = db::pending_items(&pool, limit).await;
 
     if items.is_empty() {
         info!("no pending items");
@@ -59,7 +56,7 @@ pub async fn run(config: &Config, limit: usize) -> Result<()> {
     let mut sent = 0usize;
     let mut failed = 0usize;
     for item in items {
-        match process_item(&pool, &summarizer, &zhuazhua, config, &item).await {
+        match process_item(&pool, &summarizer, &search, &prepared, &item).await {
             Ok(()) => sent += 1,
             Err(e) => {
                 failed += 1;
@@ -78,7 +75,7 @@ pub async fn run(config: &Config, limit: usize) -> Result<()> {
                         warn!("item {} failed: {source:#}", item.id)
                     }
                 }
-                mark_failed(&pool, &item.id, e.as_ref(), &format!("{e:#}")).await;
+                db::mark_failed(&pool, &item.id, e.as_ref(), &format!("{e:#}")).await;
             }
         }
     }
@@ -89,26 +86,47 @@ pub async fn run(config: &Config, limit: usize) -> Result<()> {
     Ok(())
 }
 
+/// 配置与启动时构建好的运行时实现成对出现。
+struct PreparedChannel<'a> {
+    config: &'a ChannelConfig,
+    channel: Channel,
+}
+
+/// 把每个渠道配置 build 成运行时实现。
+fn prepare_channels(config: &Config) -> Result<Vec<PreparedChannel<'_>>> {
+    config
+        .channels
+        .iter()
+        .map(|channel_config| {
+            Ok(PreparedChannel {
+                config: channel_config,
+                channel: channel_config
+                    .build()
+                    .with_context(|| format!("build channel {}", channel_config.name()))?,
+            })
+        })
+        .collect()
+}
+
 async fn process_item(
     pool: &SqlitePool,
     summarizer: &Summarizer,
-    zhuazhua: &clients::zhuazhua::Client,
-    config: &Config,
+    search: &clients::search::Client,
+    prepared: &[PreparedChannel<'_>],
     item: &PendingItem,
 ) -> Result<(), ItemError> {
-    let content = build_content(zhuazhua, item)
+    let content = build_content(search, item)
         .await
         .map_err(ItemError::Fetch)?;
     let preview = summarizer.preview(&content).await.map_err(ItemError::Llm)?;
     let rendered = render_message(&preview, item);
-    let content_json = serde_json::to_string(&serde_json::json!({ "text": rendered }))
+    let content_json = serde_json::to_string(&TextContent { text: &rendered })
         .map_err(|e| ItemError::Other(anyhow::Error::new(e)))?;
 
     // 渠道按配置顺序取首个白名单命中的；白名单为空的渠道兜底。
-    let channel = config
-        .channels
+    let prepared = prepared
         .iter()
-        .find(|channel| tags_match(channel.tags(), &item.source_tags.0))
+        .find(|prepared| prepared.config.accepts(&item.source_tags))
         .ok_or_else(|| {
             ItemError::Other(anyhow::anyhow!(
                 "no channel matches tags {:?}",
@@ -116,51 +134,40 @@ async fn process_item(
             ))
         })?;
 
-    send_to_channel(channel, &content_json)
+    prepared
+        .channel
+        .send(&content_json)
         .await
         .map_err(ItemError::Send)?;
-    info!("item {} sent to {}", item.id, channel.name());
+    info!("item {} sent to {}", item.id, prepared.config.name());
 
-    let now = chrono::Utc::now();
-    sqlx::query(
-        "UPDATE items SET status = ?, sent_at = ?, llm_title = ?, llm_summary = ?, llm_tags = ?, error = NULL WHERE id = ?",
+    let tags_json = serde_json::to_string(&preview.tags)
+        .map_err(|e| ItemError::Other(anyhow::Error::new(e)))?;
+    db::mark_sent(
+        pool,
+        &item.id,
+        chrono::Utc::now(),
+        &preview.title,
+        &preview.preview,
+        &tags_json,
     )
-    .bind(db::Status::Sent.as_ref())
-    .bind(now)
-    .bind(&preview.title)
-    .bind(&preview.preview)
-    .bind(serde_json::to_string(&preview.tags).map_err(|e| ItemError::Other(anyhow::Error::new(e)))?)
-    .bind(&item.id)
-    .execute(pool)
-    .await
-    .expect("标记条目已发送失败，无法继续");
+    .await;
     Ok(())
 }
 
-async fn mark_failed(pool: &SqlitePool, id: &str, status: &str, error: &str) {
-    sqlx::query("UPDATE items SET status = ?, error = ? WHERE id = ?")
-        .bind(status)
-        .bind(error)
-        .bind(id)
-        .execute(pool)
-        .await
-        .expect("标记条目失败状态失败，无法继续");
-}
-
-/// 组装交给 LLM 的文本：direct 条目读网页正文，其余用旧版模板拼原文。
-async fn build_content(zhuazhua: &clients::zhuazhua::Client, item: &PendingItem) -> Result<String> {
-    if item.is_direct {
-        let link = item
-            .link
-            .as_deref()
-            .ok_or_else(|| ItemError::Fetch(anyhow::anyhow!("direct item without link")))?;
-        let request = clients::zhuazhua::types::FetchRequest {
+/// 组装交给 LLM 的文本：fetch 条目读网页正文，其余用旧版模板拼原文。
+async fn build_content(search: &clients::search::Client, item: &PendingItem) -> Result<String> {
+    if item.fetch {
+        let Some(link) = item.link.as_deref() else {
+            return Err(ItemError::Fetch(anyhow::anyhow!("fetch item without link")).into());
+        };
+        let request = clients::search::types::FetchRequest {
             url: link.to_string(),
         };
-        let response = zhuazhua.fetch_url(&request).await.map_err(zhuazhua_error)?;
+        let response = search.fetch(&request).await.map_err(search_error)?;
         let content = response.into_inner().content;
         if content.trim().is_empty() {
-            anyhow::bail!("zhuazhua returned empty content for {link}");
+            anyhow::bail!("search returned empty content for {link}");
         }
         Ok(content)
     } else {
@@ -175,19 +182,13 @@ async fn build_content(zhuazhua: &clients::zhuazhua::Client, item: &PendingItem)
     }
 }
 
-fn zhuazhua_error(
-    e: clients::zhuazhua::Error<clients::zhuazhua::types::ErrorResponse>,
-) -> anyhow::Error {
+fn search_error(e: clients::search::Error<clients::search::types::ErrorResponse>) -> anyhow::Error {
     match e {
-        clients::zhuazhua::Error::ErrorResponse(response) => {
+        clients::search::Error::ErrorResponse(response) => {
             let err = response.into_inner();
-            anyhow::anyhow!(
-                "zhuazhua: {} ({})",
-                err.error.message,
-                err.error.code.unwrap_or_default()
-            )
+            anyhow::anyhow!("search: {} ({})", err.error.message, err.error.code)
         }
-        other => anyhow::anyhow!("zhuazhua request failed: {other}"),
+        other => anyhow::anyhow!("search request failed: {other}"),
     }
 }
 
@@ -212,99 +213,10 @@ fn render_message(preview: &Preview, item: &PendingItem) -> String {
     )
 }
 
-/// 渠道标签白名单匹配：白名单为空表示接收全部。
-fn tags_match(channel_tags: &[String], item_tags: &[String]) -> bool {
-    if channel_tags.is_empty() {
-        return true;
-    }
-    channel_tags.iter().any(|tag| item_tags.contains(tag))
-}
-
-async fn send_to_channel(channel: &Channel, content_json: &str) -> Result<()> {
-    match channel {
-        Channel::Tenant {
-            app_id,
-            app_secret,
-            chat_id,
-            base_url,
-            ..
-        } => {
-            let mut builder = LarkClient::builder(app_id, app_secret).max_retries(0);
-            if let Some(base) = base_url {
-                builder = builder.base_url(base);
-            }
-            let client = builder.build().context("build lark client")?;
-            let body = CreateMessageReqBody {
-                receive_id: Some(chat_id.clone()),
-                msg_type: Some("text".to_string()),
-                content: Some(content_json.to_string()),
-                uuid: None,
-            };
-            let response = client
-                .im()
-                .message
-                .create("chat_id", &body, &RequestOption::default())
-                .await
-                .context("feishu im send")?;
-            if !response.success() {
-                anyhow::bail!("feishu im send rejected");
-            }
-            Ok(())
-        }
-        // 群机器人 webhook 是无鉴权的纯 POST；lark SDK 强制要求非空
-        // app_id，发不了这种请求，这里直接用 reqwest 打完整 webhook 地址。
-        Channel::Webhook { url, secret, .. } => {
-            let url = match secret {
-                Some(secret) => sign_webhook(url, secret),
-                None => url.clone(),
-            };
-            let response = reqwest::Client::new()
-                .post(url)
-                .json(&serde_json::json!({ "msg_type": "text", "content": content_json }))
-                .send()
-                .await
-                .context("feishu webhook send")?;
-            if !response.status().is_success() {
-                anyhow::bail!("feishu webhook http {}", response.status());
-            }
-            let body: serde_json::Value =
-                response.json().await.context("parse webhook response")?;
-            let code = body
-                .get("code")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(-1);
-            if code != 0 {
-                anyhow::bail!(
-                    "feishu webhook rejected: code {code}, msg {}",
-                    body.get("msg")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("")
-                );
-            }
-            Ok(())
-        }
-    }
-}
-
-/// 按飞书自定义机器人签名算法给 webhook 地址追加 timestamp/sign 查询参数：
-/// HMAC-SHA256 的 key 是 `{timestamp}\n{secret}`，消息体为空字符串。
-fn sign_webhook(url: &str, secret: &str) -> String {
-    use base64::Engine;
-    use hmac::{Hmac, KeyInit, Mac};
-    use sha2::Sha256;
-
-    let timestamp = chrono::Utc::now().timestamp();
-    let string_to_sign = format!("{timestamp}\n{secret}");
-    let mut mac =
-        Hmac::<Sha256>::new_from_slice(string_to_sign.as_bytes()).expect("HMAC 接受任意长度的 key");
-    mac.update(b"");
-    let sign = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
-    format!("{}?timestamp={timestamp}&sign={}", url, urlencoding(&sign))
-}
-
-/// 百分号编码查询参数值（base64 含 +/= 字符，必须编码）。
-fn urlencoding(input: &str) -> String {
-    percent_encoding::utf8_percent_encode(input, percent_encoding::NON_ALPHANUMERIC).to_string()
+/// 文本消息 content 字段。
+#[derive(serde::Serialize)]
+struct TextContent<'a> {
+    text: &'a str,
 }
 
 /// ItemError 的状态字符串必须与 Status 枚举一致，防止两处漂移。

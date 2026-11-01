@@ -32,7 +32,8 @@ pub struct Summarizer {
 
 impl Summarizer {
     pub fn new(llm: &Llm) -> anyhow::Result<Self> {
-        let client = Client::from_url(&llm.api_key, &llm.api_base);
+        // 本地网关可能不校验 key，缺省传空串。
+        let client = Client::from_url(llm.api_key.as_deref().unwrap_or(""), llm.api_base.as_str());
         let extractor = client
             .extractor::<Preview>(&llm.model)
             .preamble("你是一个文本分析专家。根据给定文段，提取出文段的标题、摘要和关键词，无论文段的语言是什么，你必须使用简体中文编写。")

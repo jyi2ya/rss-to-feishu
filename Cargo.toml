@@ -10,15 +10,14 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 csv = "1"
+enum_dispatch = "0.3.13"
 feed-rs = "2"
 figment = { version = "0.10.19", features = ["toml"] }
 flate2 = "1"
 futures = "0.3"
 garde = { version = "0.23.0", features = ["derive"] }
 hmac = "0.13.0"
-larksuite-oapi-sdk-rs = "0.3.13"
 md-5 = "0.10"
-percent-encoding = "2"
 progenitor = "0.11.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rig-core = "0.10"
@@ -26,11 +25,11 @@ schemars = { version = "0.8", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11.1"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "derive", "chrono"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "derive", "chrono", "json"] }
 strum = { version = "0.28.0", features = ["derive"] }
 tabled = "0.22"
 thiserror = "2.0.21"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs"] }
-toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = { version = "2.5.8", features = ["serde"] }

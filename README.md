@@ -6,10 +6,10 @@
 ## 特性
 
 - **`sync`**：并发抓取配置里的订阅源（feed-rs 解析 RSS/Atom/JSON Feed），新条目入 sqlite；
-- **`push`**：取 pending 条目，`direct+` 源先经 zhuazhua 抓网页正文，再用 rig 做结构化提取（标题/摘要/标签），推送到飞书；
+- **`push`**：取 pending 条目，`fetch = true` 的源先经网页抓取服务（DeepSeek Search API 的 Fetch 工具）抓网页正文，再用 rig 做结构化提取（标题/摘要/标签），推送到飞书；
 - **`migrate`**：把旧版 db（`db/*.csv` + `db.jsonl`，含 `GZ:` 压缩字段）迁进 sqlite，并打印旧订阅源对应的 `[feeds]` TOML 片段；
-- 飞书渠道是配置数组：`tenant`（自建应用，SDK 自动管理 tenant token）或 `webhook`（群机器人），带标签白名单；
-- HTTP 请求约束：zhuazhua 的接口写成 OpenAPI 放在 `openapi/` 下，经 progenitor 在编译期生成客户端；飞书走 `larksuite-oapi-sdk-rs`。
+- 飞书渠道是配置数组：`tenant`（自建应用，用环境变量里的 tenant_access_token 发消息，不调登录接口）或 `webhook`（群机器人），带标签白名单；
+- HTTP 请求约束：网页抓取接口（DeepSeek Search API 的 Fetch 工具，base_url 可配官方或本地兼容实现）与飞书群消息接口都写成 OpenAPI 放在 `openapi/` 下，经 progenitor 在编译期生成客户端。
 
 ## 构建
 
@@ -23,10 +23,10 @@ cargo build --release
 
 - `database_path`：sqlite 文件路径（必填）；
 - `[llm]`：OpenAI 兼容接口的 `api_base` / `api_key` / `model`（必填）；
-- `[zhuazhua]`：网页正文抓取服务地址与可选 `api_token`（必填 url）；
+- `[fetch]`：网页抓取服务的 `base_url` 与可选 `api_key`（指向官方 API 时必填）；
 - `[sync]`：`concurrency`（默认 8）、`timeout_secs`（默认 60）、`proxy`（缺省回退 `https_proxy`/`http_proxy` 环境变量）；
-- `[[channels]]`：渠道数组。`type = "tenant"` 配 `app_id`/`app_secret`/`chat_id`；`type = "webhook"` 配 `url`。`tags` 是白名单：非空时只收含这些标签（任一命中）的条目，为空兜底收全部；
-- `[feeds]`：订阅源表，`URL = ["标签", ...]`；URL 带 `direct+` 前缀表示正文直读。
+- `[[channels]]`：渠道数组。`type = "tenant"` 配 `token_env`（存 tenant_access_token 的环境变量名）/`chat_id`；`type = "webhook"` 配 `url`。`tags` 是白名单：非空时只收含这些标签（任一命中）的条目，为空兜底收全部；
+- `[[feeds]]`：订阅源数组，每个源有 `url`、`tags`、`fetch`（正文直读，缺省 false）。
 
 渠道按数组顺序取**首个**白名单命中的发送，空白名单渠道放最后即可兜底。
 
@@ -72,5 +72,6 @@ rss-to-feishu --config config.toml status --json
 | RSS/Atom 解析 | [feed-rs](https://crates.io/crates/feed-rs) |
 | 存储 | sqlite + [sqlx](https://crates.io/crates/sqlx) |
 | LLM 结构化输出 | [rig](https://crates.io/crates/rig-core) |
-| 飞书 | [larksuite-oapi-sdk-rs](https://crates.io/crates/larksuite-oapi-sdk-rs) |
-| zhuazhua 客户端 | [progenitor](https://crates.io/crates/progenitor)（spec 见 `openapi/zhuazhua.yaml`） |
+
+| Fetch 工具客户端 | [progenitor](https://crates.io/crates/progenitor)（spec 见 `openapi/search.yaml`） |
+| 飞书群消息客户端 | [progenitor](https://crates.io/crates/progenitor)（spec 见 `openapi/feishu.yaml`） |

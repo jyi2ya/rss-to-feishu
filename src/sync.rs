@@ -17,13 +17,12 @@ pub async fn run(config: &Config) -> Result<()> {
     info!("db connected");
     let client = http_client(config)?;
     info!("http client built");
-    let feeds = config.feed_entries();
-    info!("{} feeds to fetch", feeds.len());
+    info!("{} feeds to fetch", config.feeds.len());
 
     // 并发抓取全部订阅源（buffer_unordered 限流），摊平收集所有条目；
     // 抓取失败的源打日志后丢弃。
-    let items: Vec<Item> = futures::stream::iter(feeds)
-        .map(|entry| fetch_feed(&client, entry.url, entry.direct, entry.tags))
+    let items: Vec<Item> = futures::stream::iter(&config.feeds)
+        .map(|feed| fetch_feed(&client, &feed.url, feed.fetch, &feed.tags))
         .buffer_unordered(config.sync.concurrency)
         .inspect(|result| {
             if let Err(e) = result {
@@ -52,14 +51,9 @@ fn http_client(config: &Config) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(config.sync.timeout_secs));
-    if let Some(proxy) = config
-        .sync
-        .proxy
-        .clone()
-        .or_else(|| std::env::var("https_proxy").ok())
-        .or_else(|| std::env::var("http_proxy").ok())
-        .filter(|s| !s.trim().is_empty())
-    {
+    // 代理：只在配置里显式指定时覆盖；缺省走 reqwest 自带的系统代理
+    //（http_proxy/https_proxy 环境变量）。
+    if let Some(proxy) = config.sync.proxy.clone().filter(|s| !s.trim().is_empty()) {
         builder = builder.proxy(reqwest::Proxy::all(&proxy).with_context(|| "build proxy")?);
     }
     builder.build().context("build http client")
@@ -67,13 +61,13 @@ fn http_client(config: &Config) -> Result<reqwest::Client> {
 
 async fn fetch_feed(
     client: &reqwest::Client,
-    url: &str,
-    direct: bool,
+    url: &url::Url,
+    fetch: bool,
     tags: &[String],
 ) -> Result<Vec<Item>> {
     info!("fetching {url}");
     let response = client
-        .get(url)
+        .get(url.clone())
         .send()
         .await
         .with_context(|| format!("fetch {url}"))?
@@ -94,10 +88,10 @@ async fn fetch_feed(
 
     let mut items = Vec::new();
     for entry in feed.entries {
-        // direct 源的条目正文在 push 时经 zhuazhua 抓网页，正文为空也入队；
+        // fetch 源的条目正文在 push 时经 Fetch 工具抓网页，正文为空也入队；
         // 普通源没有正文就没东西可摘要，跳过。
         let description_text = entry_text(&entry).unwrap_or_default().trim().to_string();
-        if !direct && description_text.is_empty() {
+        if !fetch && description_text.is_empty() {
             warn!("{url}: entry with empty content, skip");
             continue;
         }
@@ -122,8 +116,8 @@ async fn fetch_feed(
             link,
             description_text,
             pub_date,
-            is_direct: direct,
-            source_tags: db::Tags(tags.to_vec()),
+            fetch,
+            source_tags: sqlx::types::Json(tags.to_vec()),
             enqueued_at,
             sort_key,
             status: db::Status::Pending,

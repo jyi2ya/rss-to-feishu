@@ -1,0 +1,62 @@
+openapi: 3.0.3
+info:
+  title: Feishu Open API subset used by rss-to-feishu
+  version: "1.0"
+  description: >
+    本工具只用到的飞书开放平台接口：给群发消息。鉴权用现成的
+    tenant_access_token（由外部轮换，本工具不调登录接口）。
+paths:
+  /open-apis/im/v1/messages:
+    post:
+      operationId: createMessage
+      parameters:
+        - name: receive_id_type
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [chat_id]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMessageRequest"
+      responses:
+        "2XX":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateMessageResponse"
+        default:
+          description: error
+          x-error: true
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateMessageResponse"
+components:
+  schemas:
+    CreateMessageRequest:
+      type: object
+      required: [receive_id, msg_type, content]
+      properties:
+        receive_id:
+          type: string
+          description: 目标群的 chat_id。
+        msg_type:
+          type: string
+          description: 消息类型，如 text。
+        content:
+          type: string
+          description: '消息内容 JSON 字符串（text 类型形如 {"text": "..."}）。'
+    CreateMessageResponse:
+      type: object
+      required: [code, msg]
+      properties:
+        code:
+          type: integer
+          description: 0 表示成功。
+        msg:
+          type: string

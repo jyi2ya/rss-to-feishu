@@ -6,6 +6,7 @@
 //! - `migrate`：把旧版 rss-feishu-bridge 的 db 迁进 sqlite；
 //! - `status`：查看条目状态统计（ASCII 表格或 JSON）。
 
+mod channel;
 mod clients;
 mod config;
 mod db;
@@ -23,7 +24,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "rss-to-feishu", version, about)]
+#[command(version, about)]
 struct Cli {
     /// 配置文件路径
     #[arg(
@@ -45,7 +46,7 @@ enum Command {
     Push {
         /// 最多处理多少条
         #[arg(long, default_value_t = 1)]
-        limit: usize,
+        limit: u32,
     },
     /// 将旧版 rss-feishu-bridge 的 db 迁移到 sqlite
     Migrate {

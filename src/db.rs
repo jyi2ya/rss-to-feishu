@@ -24,46 +24,6 @@ pub enum Status {
     FailedOther,
 }
 
-/// 标签列表：库中以 JSON 数组字符串存储，解码兼容旧版竖线分隔格式。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Tags(pub Vec<String>);
-
-impl sqlx::Type<sqlx::Sqlite> for Tags {
-    fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
-        <String as sqlx::Type<sqlx::Sqlite>>::type_info()
-    }
-
-    fn compatible(ty: &sqlx::sqlite::SqliteTypeInfo) -> bool {
-        <String as sqlx::Type<sqlx::Sqlite>>::compatible(ty)
-    }
-}
-
-impl<'q> sqlx::Encode<'q, sqlx::Sqlite> for Tags {
-    fn encode_by_ref(
-        &self,
-        buf: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>,
-    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
-        let json = serde_json::to_string(&self.0)?;
-        <String as sqlx::Encode<sqlx::Sqlite>>::encode(json, buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Sqlite> for Tags {
-    fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
-        let text = <String as sqlx::Decode<sqlx::Sqlite>>::decode(value)?;
-        if let Ok(tags) = serde_json::from_str(&text) {
-            return Ok(Tags(tags));
-        }
-        // 旧数据是竖线分隔，解码时顺带兼容。
-        Ok(Tags(
-            text.split('|')
-                .filter(|tag| !tag.is_empty())
-                .map(str::to_string)
-                .collect(),
-        ))
-    }
-}
-
 /// 条目在库中的完整记录（插入/迁移用，不派生 Clone）。
 #[derive(Debug)]
 pub struct Item {
@@ -75,14 +35,14 @@ pub struct Item {
     pub description_text: String,
     /// 发布时间；源里没给或解析失败时为 None，展示/排序时兜底入队时间。
     pub pub_date: Option<DateTime<Utc>>,
-    pub is_direct: bool,
-    pub source_tags: Tags,
+    pub fetch: bool,
+    pub source_tags: sqlx::types::Json<Vec<String>>,
     pub enqueued_at: DateTime<Utc>,
     pub sort_key: i64,
     pub status: Status,
     pub llm_title: Option<String>,
     pub llm_summary: Option<String>,
-    pub llm_tags: Option<Tags>,
+    pub llm_tags: Option<sqlx::types::Json<Vec<String>>>,
     pub sent_at: Option<DateTime<Utc>>,
     pub error: Option<String>,
 }
@@ -96,8 +56,8 @@ pub struct PendingItem {
     pub link: Option<String>,
     pub description_text: String,
     pub pub_date: Option<DateTime<Utc>>,
-    pub is_direct: bool,
-    pub source_tags: Tags,
+    pub fetch: bool,
+    pub source_tags: sqlx::types::Json<Vec<String>>,
     pub enqueued_at: DateTime<Utc>,
 }
 
@@ -129,8 +89,9 @@ pub fn compute_sort_key(
     enqueued_at: DateTime<Utc>,
 ) -> i64 {
     let epoch = pub_date.unwrap_or(enqueued_at).timestamp();
-    let jitter = u64::from_str_radix(id.get(..8).unwrap_or(""), 16).unwrap_or(0) % 86_400;
-    epoch + jitter as i64
+    // 8 位 hex 最大 0xFFFFFFFF，i64 放得下，避免 u64 -> i64 的 wrap cast。
+    let jitter = i64::from_str_radix(id.get(..8).unwrap_or(""), 16).unwrap_or(0) % 86_400;
+    epoch + jitter
 }
 
 /// 过滤明显异常的发布时间：feed 里偶有 `0001-01-01` 之类的垃圾值，
@@ -166,34 +127,35 @@ where
 {
     let mut builder = sqlx::QueryBuilder::new(
         "INSERT INTO items (id, source, title, link, description_text, pub_date, \
-         is_direct, source_tags, enqueued_at, sort_key, status, llm_title, llm_summary, \
+         fetch, source_tags, enqueued_at, sort_key, status, llm_title, llm_summary, \
          llm_tags, sent_at, error) ",
     );
-    builder.push_values(items, |mut b, item| {
-        b.push_bind(&item.id)
-            .push_bind(&item.source)
-            .push_bind(&item.title)
-            .push_bind(&item.link)
-            .push_bind(&item.description_text)
-            .push_bind(item.pub_date)
-            .push_bind(item.is_direct)
-            .push_bind(&item.source_tags)
-            .push_bind(item.enqueued_at)
-            .push_bind(item.sort_key)
-            .push_bind(item.status)
-            .push_bind(&item.llm_title)
-            .push_bind(&item.llm_summary)
-            .push_bind(&item.llm_tags)
-            .push_bind(item.sent_at)
-            .push_bind(&item.error);
-    });
-    builder.push(
-        " ON CONFLICT(id) DO UPDATE SET source = excluded.source, title = excluded.title, \
-         link = excluded.link, description_text = excluded.description_text, \
-         pub_date = excluded.pub_date, is_direct = excluded.is_direct, \
-         source_tags = excluded.source_tags, sort_key = excluded.sort_key",
-    );
-    builder
+    let _rows = builder
+        .push_values(items, |mut b, item| {
+            let _b = b
+                .push_bind(&item.id)
+                .push_bind(&item.source)
+                .push_bind(&item.title)
+                .push_bind(&item.link)
+                .push_bind(&item.description_text)
+                .push_bind(item.pub_date)
+                .push_bind(item.fetch)
+                .push_bind(&item.source_tags)
+                .push_bind(item.enqueued_at)
+                .push_bind(item.sort_key)
+                .push_bind(item.status)
+                .push_bind(&item.llm_title)
+                .push_bind(&item.llm_summary)
+                .push_bind(&item.llm_tags)
+                .push_bind(item.sent_at)
+                .push_bind(&item.error);
+        })
+        .push(
+            " ON CONFLICT(id) DO UPDATE SET source = excluded.source, title = excluded.title, \
+             link = excluded.link, description_text = excluded.description_text, \
+             pub_date = excluded.pub_date, fetch = excluded.fetch, \
+             source_tags = excluded.source_tags, sort_key = excluded.sort_key",
+        )
         .build()
         .execute(executor)
         .await
@@ -208,4 +170,50 @@ pub async fn count_by_status(pool: &SqlitePool) -> std::collections::BTreeMap<St
             .await
             .expect("统计条目失败，无法继续");
     rows.into_iter().collect()
+}
+
+/// 取前 limit 条待推送条目（按排序键、入队时间）。
+pub async fn pending_items(pool: &SqlitePool, limit: u32) -> Vec<PendingItem> {
+    sqlx::query_as::<_, PendingItem>(
+        "SELECT * FROM items WHERE status = ? ORDER BY sort_key, enqueued_at LIMIT ?",
+    )
+    .bind(Status::Pending.as_ref())
+    .bind(i64::from(limit))
+    .fetch_all(pool)
+    .await
+    .expect("加载待推送条目失败，无法继续")
+}
+
+/// 标记条目已发送：写入状态、发送时间与 LLM 摘要。
+pub async fn mark_sent(
+    pool: &SqlitePool,
+    item_id: &str,
+    sent_at: DateTime<Utc>,
+    llm_title: &str,
+    llm_summary: &str,
+    llm_tags_json: &str,
+) {
+    let _rows = sqlx::query(
+        "UPDATE items SET status = ?, sent_at = ?, llm_title = ?, llm_summary = ?, llm_tags = ?, error = NULL WHERE id = ?",
+    )
+    .bind(Status::Sent.as_ref())
+    .bind(sent_at)
+    .bind(llm_title)
+    .bind(llm_summary)
+    .bind(llm_tags_json)
+    .bind(item_id)
+    .execute(pool)
+    .await
+    .expect("标记条目已发送失败，无法继续");
+}
+
+/// 标记条目失败：写入状态与原因。
+pub async fn mark_failed(pool: &SqlitePool, item_id: &str, status: &str, error: &str) {
+    let _rows = sqlx::query("UPDATE items SET status = ?, error = ? WHERE id = ?")
+        .bind(status)
+        .bind(error)
+        .bind(item_id)
+        .execute(pool)
+        .await
+        .expect("标记条目失败状态失败，无法继续");
 }

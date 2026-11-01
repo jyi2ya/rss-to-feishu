@@ -1,11 +1,16 @@
 openapi: 3.0.3
 info:
-  title: Zhuazhua URL-to-Markdown fetch API (DeepSeek Search API compatible)
+  title: DeepSeek Search API — URL to Markdown
   version: "1.0"
+  description: >
+    DeepSeek Search API 的 Fetch 工具（https://api-docs.deepseek.com/guides/search/）：
+    把任意 http(s) URL 抓成 Markdown。HTTP 客户端通过可配置的 base_url 工作，
+    可指向官方 API（https://api.deepseek.com，需要 api_key），
+    也可指向本地兼容实现（如 http://127.0.0.1:18620）。
 paths:
   /v1/tools/fetch:
     post:
-      operationId: fetchUrl
+      operationId: fetch
       requestBody:
         required: true
         content:
@@ -34,27 +39,30 @@ components:
       properties:
         url:
           type: string
+          description: 要抓取的 http(s) 地址，不能带凭据。
     FetchResponse:
       type: object
       required: [title, content]
       properties:
         title:
           type: string
+          description: 页面标题（可能为空字符串）。
         content:
           type: string
-          description: The page rendered as Markdown
+          description: 页面正文渲染成的 Markdown。
     ErrorResponse:
       type: object
       required: [error]
       properties:
         error:
           type: object
-          required: [message, type]
+          required: [message, type, param, code]
           properties:
             message:
               type: string
             type:
               type: string
+              description: OpenAI 风格错误类型，如 invalid_request_error。
             param:
               type: string
               nullable: true

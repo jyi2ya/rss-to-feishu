@@ -10,11 +10,13 @@ api_base = "http://llm.i.villv.tech/v1"
 api_key = "your-api-key"
 model = "brainllm"
 
-# 网页正文抓取服务（zhuazhua）
-[zhuazhua]
-url = "http://127.0.0.1:18620"
-# 服务端配置了 SCRAPER_API_TOKEN 时才需要
-# api_token = ""
+# 网页正文抓取：DeepSeek Search API 的 Fetch 工具。
+# base_url 可指向官方 API（https://api.deepseek.com，需要 api_key），
+# 也可指向本地兼容实现。
+[fetch]
+base_url = "http://127.0.0.1:18620"
+# 指向官方 API 时必填
+# api_key = "sk-..."
 
 # 订阅源抓取（可选，以下为缺省值）
 [sync]
@@ -28,8 +30,8 @@ timeout_secs = 60
 [[channels]]
 name = "default"
 type = "tenant"
-app_id = "cli_xxx"
-app_secret = "yyy"
+# 环境变量名：里面放 tenant_access_token（由外部轮换，本工具不调登录接口）
+token_env = "FEISHU_TENANT_TOKEN"
 chat_id = "oc_xxx"
 tags = []
 # base_url = "https://open.feishu.cn"
@@ -37,8 +39,7 @@ tags = []
 # [[channels]]
 # name = "tech"
 # type = "tenant"
-# app_id = "cli_xxx"
-# app_secret = "yyy"
+# token_env = "FEISHU_TENANT_TOKEN"
 # chat_id = "oc_yyy"
 # tags = ["rust", "blog"]
 
@@ -50,7 +51,13 @@ tags = []
 # secret = "your-signature-secret"
 # tags = ["fun"]
 
-# 订阅源：URL -> 标签。URL 带 direct+ 前缀表示正文直读（push 时经 zhuazhua 抓全文）。
-[feeds]
-"https://example.com/feed.xml" = ["blog"]
-"direct+https://example.org/rss" = ["rust"]
+# 订阅源数组：每个源一个 [[feeds]] 表。
+# tags 是源自带的标签；fetch = true 表示正文直读（push 时经 Fetch 工具抓全文）。
+[[feeds]]
+url = "https://example.com/feed.xml"
+tags = ["blog"]
+
+[[feeds]]
+url = "https://example.org/rss"
+tags = ["rust"]
+fetch = true

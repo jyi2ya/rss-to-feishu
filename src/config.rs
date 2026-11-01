@@ -1,10 +1,7 @@
 //! TOML 配置：figment 负责加载，garde 负责声明式校验。
 //! 必填字段缺失由 serde 在反序列化时报错，取值约束全部用 garde 属性表达。
 
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use figment::{
@@ -20,45 +17,67 @@ pub struct Config {
     /// sqlite 数据库文件路径。
     #[garde(skip)]
     pub database_path: PathBuf,
-    /// 订阅源：URL -> 标签列表。URL 带 `direct+` 前缀表示正文直读。
-    #[garde(skip)]
-    pub feeds: BTreeMap<String, Vec<String>>,
+    /// 订阅源列表。
+    #[serde(default)]
+    #[garde(dive)]
+    pub feeds: Vec<Feed>,
     /// 飞书推送渠道数组。
     #[serde(default)]
     #[garde(dive)]
-    pub channels: Vec<Channel>,
+    pub channels: Vec<crate::channel::ChannelConfig>,
     #[garde(dive)]
     pub llm: Llm,
     #[garde(dive)]
-    pub zhuazhua: Zhuazhua,
+    pub fetch: Fetch,
     #[serde(default)]
     #[garde(dive)]
     pub sync: Sync,
+}
+
+/// 一个订阅源。
+#[derive(Debug, Deserialize, Validate)]
+#[serde(deny_unknown_fields)]
+pub struct Feed {
+    /// feed 地址（serde 反序列化时校验 URL 合法性）。
+    #[garde(skip)]
+    pub url: url::Url,
+    /// 正文直读：push 时经 Fetch 工具抓网页正文，feed 里的摘要可缺失。
+    #[serde(default)]
+    #[garde(skip)]
+    pub fetch: bool,
+    #[serde(default)]
+    #[garde(inner(length(min = 1)))]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct Llm {
     /// OpenAI 兼容 chat completions 的 base URL。
+    #[garde(skip)]
+    pub api_base: url::Url,
+    /// API key；本地网关不需要鉴权时留空。
+    #[serde(default)]
     #[garde(length(min = 1))]
-    pub api_base: String,
-    #[garde(length(min = 1))]
-    pub api_key: String,
+    pub api_key: Option<String>,
     /// 后端模型名。
     #[garde(length(min = 1))]
     pub model: String,
 }
 
+/// 网页抓取服务：DeepSeek Search API 的 Fetch 工具。
+/// base_url 可指向官方 API，也可指向本地兼容实现。
 #[derive(Debug, Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
-pub struct Zhuazhua {
-    /// zhuazhua 服务地址，如 `http://127.0.0.1:18620`。
-    #[garde(length(min = 1))]
-    pub url: String,
-    /// 服务端配置了 SCRAPER_API_TOKEN 时需要的鉴权头。
+pub struct Fetch {
+    /// 服务 base URL：官方为 `https://api.deepseek.com`，
+    /// 本地兼容实现形如 `http://127.0.0.1:18620`。
+    #[garde(skip)]
+    pub base_url: url::Url,
+    /// 官方 API 需要的 DeepSeek API key；本地实现缺省不需要。
     #[serde(default)]
     #[garde(length(min = 1))]
-    pub api_token: Option<String>,
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate)]
@@ -72,7 +91,7 @@ pub struct Sync {
     #[serde(default = "default_timeout_secs")]
     #[garde(range(min = 1))]
     pub timeout_secs: u64,
-    /// HTTP 代理；缺省时回退到 `https_proxy`/`http_proxy` 环境变量。
+    /// HTTP 代理；缺省时走系统代理（`http_proxy`/`https_proxy` 环境变量）。
     #[serde(default)]
     #[garde(length(min = 1))]
     pub proxy: Option<String>,
@@ -88,72 +107,12 @@ impl Default for Sync {
     }
 }
 
-fn default_concurrency() -> usize {
+const fn default_concurrency() -> usize {
     8
 }
 
-fn default_timeout_secs() -> u64 {
+const fn default_timeout_secs() -> u64 {
     60
-}
-
-#[derive(Debug, Deserialize, Validate)]
-#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
-pub enum Channel {
-    /// 自建应用，通过 im/v1/messages 发送。
-    Tenant {
-        #[garde(length(min = 1))]
-        name: String,
-        #[garde(length(min = 1))]
-        app_id: String,
-        #[garde(length(min = 1))]
-        app_secret: String,
-        #[garde(length(min = 1))]
-        chat_id: String,
-        /// 标签白名单：非空时只推送带这些标签（任一命中）的条目。
-        #[serde(default)]
-        #[garde(inner(length(min = 1)))]
-        tags: Vec<String>,
-        /// 飞书开放平台 base URL，缺省 `https://open.feishu.cn`。
-        #[serde(default)]
-        #[garde(length(min = 1))]
-        base_url: Option<String>,
-    },
-    /// 群自定义机器人 webhook。
-    Webhook {
-        #[garde(length(min = 1))]
-        name: String,
-        /// webhook 完整地址，形如 `https://open.feishu.cn/open-apis/bot/v2/hook/<token>`。
-        #[garde(length(min = 1))]
-        url: String,
-        /// 机器人安全设置的签名密钥；配置后按飞书签名算法追加 timestamp/sign。
-        #[serde(default)]
-        #[garde(length(min = 1))]
-        secret: Option<String>,
-        #[serde(default)]
-        #[garde(inner(length(min = 1)))]
-        tags: Vec<String>,
-    },
-}
-
-impl Channel {
-    pub fn name(&self) -> &str {
-        match self {
-            Channel::Tenant { name, .. } | Channel::Webhook { name, .. } => name,
-        }
-    }
-
-    pub fn tags(&self) -> &[String] {
-        match self {
-            Channel::Tenant { tags, .. } | Channel::Webhook { tags, .. } => tags,
-        }
-    }
-}
-
-/// 一份展开后的订阅源条目：`direct+` 前缀已拆出。
-pub struct FeedEntry<'a> {
-    pub url: &'a str,
-    pub direct: bool,
-    pub tags: &'a [String],
 }
 
 impl Config {
@@ -166,23 +125,5 @@ impl Config {
             .validate()
             .map_err(|report| anyhow::anyhow!("invalid config {}:\n{report}", path.display()))?;
         Ok(config)
-    }
-
-    pub fn feed_entries(&self) -> Vec<FeedEntry<'_>> {
-        self.feeds
-            .iter()
-            .map(|(url, tags)| match url.strip_prefix("direct+") {
-                Some(rest) => FeedEntry {
-                    url: rest,
-                    direct: true,
-                    tags,
-                },
-                None => FeedEntry {
-                    url,
-                    direct: false,
-                    tags,
-                },
-            })
-            .collect()
     }
 }

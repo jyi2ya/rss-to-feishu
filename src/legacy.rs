@@ -6,7 +6,6 @@ use std::{collections::BTreeMap, io::Read, path::Path};
 use anyhow::{Context, Result};
 use base64::Engine;
 use flate2::read::GzDecoder;
-use serde_json::Value;
 
 /// CSV 表里的一行，列名 -> 原始字符串。
 pub type CsvRow = BTreeMap<String, String>;
@@ -28,15 +27,79 @@ pub fn read_csv_table(old_dir: &Path, table: &str) -> Result<Vec<CsvRow>> {
         let record = record.with_context(|| format!("read record of {}", path.display()))?;
         let mut row = CsvRow::new();
         for (header, value) in headers.iter().zip(record.iter()) {
-            row.insert(header.to_string(), value.to_string());
+            let _previous = row.insert(header.to_string(), value.to_string());
         }
         rows.push(row);
     }
     Ok(rows)
 }
 
-/// 读取 `db.jsonl` 事件日志：`(type, data, time)`，time 为 epoch 秒。
-pub fn read_jsonl(old_dir: &Path) -> Result<Vec<(String, Value, Option<i64>)>> {
+/// 一条 `db.jsonl` 事件：`type` 字段作 tag，`data`/`time` 随类型变化。
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Event {
+    /// 新条目入队（add_old 同形）。
+    #[serde(alias = "add_old")]
+    Add {
+        data: AddData,
+        #[serde(default)]
+        time: Option<f64>,
+    },
+    /// 已发送，data 是条目 id。
+    Send { data: String },
+    /// LLM 结果回填。
+    Update { data: UpdateData },
+    /// 不认识的事件类型：跳过，不让整次迁移失败。
+    #[serde(other)]
+    Unknown,
+}
+
+/// add/add_old 事件的 data：旧库与正式 Item 字段名不同
+/// （description 与 description_text 并存，is_direct 是整数）。
+#[derive(Debug, serde::Deserialize)]
+pub struct AddData {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub link: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub description_text: Option<String>,
+    #[serde(default)]
+    pub pub_date: Option<String>,
+    #[serde(default)]
+    pub is_direct: Option<BoolOrInt>,
+    #[serde(default)]
+    pub source_tags: Option<String>,
+}
+
+/// update 事件的 data。
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateData {
+    pub id: String,
+    #[serde(default)]
+    pub llm_title: Option<String>,
+    #[serde(default)]
+    pub llm_summary: Option<String>,
+    #[serde(default)]
+    pub llm_tags: Option<Vec<String>>,
+}
+
+/// 旧库的 is_direct 有布尔和整数两种写法。
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+pub enum BoolOrInt {
+    Bool(bool),
+    Int(i64),
+}
+
+/// 读取 `db.jsonl` 事件日志。
+pub fn read_jsonl(old_dir: &Path) -> Result<Vec<Event>> {
     let path = old_dir.join("db.jsonl");
     if !path.exists() {
         return Ok(Vec::new());
@@ -48,17 +111,9 @@ pub fn read_jsonl(old_dir: &Path) -> Result<Vec<(String, Value, Option<i64>)>> {
         if line.is_empty() {
             continue;
         }
-        let value: Value = serde_json::from_str(line)
+        let event: Event = serde_json::from_str(line)
             .with_context(|| format!("parse {}:{}", path.display(), line_no + 1))?;
-        events.push((
-            value
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            value.get("data").cloned().unwrap_or(Value::Null),
-            value.get("time").and_then(Value::as_i64),
-        ));
+        events.push(event);
     }
     Ok(events)
 }

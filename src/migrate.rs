@@ -5,13 +5,12 @@ use std::{collections::BTreeMap, path::Path};
 
 use anyhow::Result;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
-use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::{
     config::Config,
     db::{self, Item},
-    legacy,
+    legacy::{self, BoolOrInt, Event},
 };
 
 /// 迁移中间态：旧库各字段都允许缺失，最后统一兜底。
@@ -22,7 +21,7 @@ struct LegacyEntry {
     link: Option<String>,
     description_text: Option<String>,
     pub_date: Option<String>,
-    is_direct: Option<bool>,
+    fetch: Option<bool>,
     source_tags: Option<String>,
     enqueued_at: Option<String>,
     sent: bool,
@@ -49,20 +48,21 @@ pub async fn run(config: &Config, old_dir: &Path) -> Result<()> {
     let events = legacy::read_jsonl(old_dir)?;
     // 旧文件里 update 可能写在 add 之前：先过一遍 add 建立条目，
     // 再过一遍 send/update 回填状态与摘要。
-    for (event_type, data, time) in &events {
-        if matches!(event_type.as_str(), "add" | "add_old") {
+    for event in &events {
+        if let Event::Add { data, time } = event {
             apply_jsonl_add(&mut entries, data, *time);
         }
     }
-    for (event_type, data, _time) in &events {
-        match event_type.as_str() {
-            "send" => {
-                if let Some(entry) = data.as_str().and_then(|id| entries.get_mut(id)) {
+    for event in &events {
+        match event {
+            Event::Add { .. } => {}
+            Event::Send { data, .. } => {
+                if let Some(entry) = entries.get_mut(data) {
                     entry.sent = true;
                 }
             }
-            "update" => apply_jsonl_update(&mut entries, data),
-            other => warn!("db.jsonl: unknown event type {other:?}, skip"),
+            Event::Update { data, .. } => apply_jsonl_update(&mut entries, data),
+            Event::Unknown => warn!("db.jsonl: unknown event type, skip"),
         }
     }
 
@@ -91,7 +91,7 @@ fn apply_csv_row(entry: &mut LegacyEntry, row: &legacy::CsvRow, is_sent: bool) {
     }
     fill(&mut entry.pub_date, row.get("pub_date"));
     if let Some(raw) = row.get("is_direct") {
-        entry.is_direct = Some(raw.trim() == "1" || raw.trim().eq_ignore_ascii_case("true"));
+        entry.fetch = Some(raw.trim() == "1" || raw.trim().eq_ignore_ascii_case("true"));
     }
     fill(&mut entry.enqueued_at, row.get("enqueued_at"));
     if is_sent {
@@ -105,47 +105,48 @@ fn apply_csv_row(entry: &mut LegacyEntry, row: &legacy::CsvRow, is_sent: bool) {
     }
 }
 
-fn apply_jsonl_add(entries: &mut BTreeMap<String, LegacyEntry>, data: &Value, time: Option<i64>) {
-    let Some(id) = data.get("id").and_then(Value::as_str) else {
+fn apply_jsonl_add(
+    entries: &mut BTreeMap<String, LegacyEntry>,
+    data: &legacy::AddData,
+    time: Option<f64>,
+) {
+    let Some(id) = data.id.as_deref().filter(|id| !id.is_empty()) else {
         warn!("db.jsonl: add event without id, skip");
         return;
     };
     let entry = entries.entry(id.to_string()).or_default();
-    fill_json(&mut entry.source, data.get("source"));
-    fill_json(&mut entry.title, data.get("title"));
-    fill_json(&mut entry.link, data.get("link"));
-    if let Some(raw) = data.get("description_text").and_then(Value::as_str) {
+    fill(&mut entry.source, data.source.as_ref());
+    fill(&mut entry.title, data.title.as_ref());
+    fill(&mut entry.link, data.link.as_ref());
+    // 旧 add 里 description 与 description_text 并存，任取其一解压。
+    if let Some(raw) = data
+        .description
+        .as_deref()
+        .or(data.description_text.as_deref())
+    {
         entry.description_text = Some(legacy::decode_legacy_gz(raw));
     }
-    fill_json(&mut entry.pub_date, data.get("pub_date"));
-    match data.get("is_direct") {
-        Some(Value::Bool(v)) => entry.is_direct = Some(*v),
-        Some(Value::Number(v)) => entry.is_direct = Some(v.as_i64() == Some(1)),
-        _ => {}
-    }
-    fill_json(&mut entry.source_tags, data.get("source_tags"));
+    fill(&mut entry.pub_date, data.pub_date.as_ref());
+    entry.fetch = match data.is_direct {
+        Some(BoolOrInt::Bool(value)) => Some(value),
+        Some(BoolOrInt::Int(value)) => Some(value == 1),
+        None => None,
+    };
+    fill(&mut entry.source_tags, data.source_tags.as_ref());
     if entry.enqueued_at.is_none() {
         entry.enqueued_at = time.map(epoch_to_rfc3339);
     }
 }
 
-fn apply_jsonl_update(entries: &mut BTreeMap<String, LegacyEntry>, data: &Value) {
-    let Some(id) = data.get("id").and_then(Value::as_str) else {
-        warn!("db.jsonl: update event without id, skip");
+fn apply_jsonl_update(entries: &mut BTreeMap<String, LegacyEntry>, data: &legacy::UpdateData) {
+    let Some(entry) = entries.get_mut(&data.id) else {
+        warn!("db.jsonl: update event for unknown id {}, skip", data.id);
         return;
     };
-    let Some(entry) = entries.get_mut(id) else {
-        warn!("db.jsonl: update event for unknown id {id}, skip");
-        return;
-    };
-    fill_json(&mut entry.llm_title, data.get("llm_title"));
-    fill_json(&mut entry.llm_summary, data.get("llm_summary"));
-    if let Some(tags) = data.get("llm_tags").and_then(Value::as_array) {
-        entry.llm_tags = tags
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect();
+    fill(&mut entry.llm_title, data.llm_title.as_ref());
+    fill(&mut entry.llm_summary, data.llm_summary.as_ref());
+    if let Some(tags) = &data.llm_tags {
+        entry.llm_tags = tags.iter().filter(|tag| !tag.is_empty()).cloned().collect();
     }
 }
 
@@ -179,8 +180,8 @@ impl LegacyEntry {
             link,
             description_text: self.description_text.clone().unwrap_or_default(),
             pub_date,
-            is_direct: self.is_direct.unwrap_or(false),
-            source_tags: db::Tags(
+            fetch: self.fetch.unwrap_or(false),
+            source_tags: sqlx::types::Json(
                 self.source_tags
                     .as_deref()
                     .map(|tags| {
@@ -200,7 +201,7 @@ impl LegacyEntry {
             },
             llm_title: self.llm_title.clone(),
             llm_summary: self.llm_summary.clone(),
-            llm_tags: (!self.llm_tags.is_empty()).then(|| db::Tags(self.llm_tags.clone())),
+            llm_tags: (!self.llm_tags.is_empty()).then(|| sqlx::types::Json(self.llm_tags.clone())),
             sent_at,
             error: None,
         })
@@ -214,11 +215,17 @@ fn print_feeds_snippet(old_dir: &Path) -> Result<()> {
         return Ok(());
     }
     println!("# feeds copied from the old link table, paste into config.toml:");
-    println!("[feeds]");
     for row in rows {
-        let Some(url) = row.get("url").filter(|url| !url.is_empty()) else {
+        let Some(raw_url) = row.get("url").filter(|url| !url.is_empty()) else {
             continue;
         };
+        // 旧 link 表的 url 可能带 direct+ 前缀，拆成结构化字段。
+        let (url, direct) = match raw_url.strip_prefix("direct+") {
+            Some(rest) => (rest, true),
+            None => (raw_url.as_str(), false),
+        };
+        println!("[[feeds]]");
+        println!("url = \"{}\"", url.replace('"', "\\\""));
         let tags: Vec<&str> = row
             .get("tags")
             .map(|tags| tags.split('|').filter(|tag| !tag.is_empty()).collect())
@@ -228,7 +235,10 @@ fn print_feeds_snippet(old_dir: &Path) -> Result<()> {
             .map(|tag| format!("\"{}\"", tag.replace('"', "\\\"")))
             .collect::<Vec<_>>()
             .join(", ");
-        println!("\"{}\" = [{}]", url.replace('"', "\\\""), tags);
+        println!("tags = [{}]", tags);
+        if direct {
+            println!("fetch = true");
+        }
     }
     Ok(())
 }
@@ -239,22 +249,17 @@ fn fill(target: &mut Option<String>, value: Option<&String>) {
     }
 }
 
-fn fill_json(target: &mut Option<String>, value: Option<&Value>) {
-    if let Some(value) = value
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-    {
-        *target = Some(value.to_string());
-    }
-}
-
 /// 旧 sent 表的 llm_tags 可能混入 perl 序列化垃圾，只接受 JSON 字符串数组。
 fn parse_tags_json(raw: &str) -> Option<Vec<String>> {
     serde_json::from_str(raw).ok()
 }
 
-fn epoch_to_rfc3339(epoch: i64) -> String {
-    DateTime::from_timestamp(epoch, 0)
+/// jsonl 的 time 是带小数的 epoch 秒，只取整数秒。
+fn epoch_to_rfc3339(epoch: f64) -> String {
+    // 先截断再经字符串转 i64：丢弃小数秒正是想要的取整行为，
+    // 绕开 float→int 直接转换的精度告警。
+    let seconds: i64 = epoch.trunc().to_string().parse().unwrap_or(0);
+    DateTime::from_timestamp(seconds, 0)
         .map(|dt| dt.to_rfc3339())
         .unwrap_or_else(|| Utc::now().to_rfc3339())
 }
