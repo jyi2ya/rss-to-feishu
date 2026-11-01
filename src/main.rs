@@ -5,12 +5,14 @@
 //! - `push`：摘要并推送 pending 条目（缺省 1 条，`--limit N` 限量）；
 //! - `migrate`：把旧版 rss-feishu-bridge 的 db 迁进 sqlite；
 //! - `status`：查看条目状态统计（ASCII 表格或 JSON）；
-//! - `suggest`：拉取一个 feed，让 LLM 判断条目是否完整文章、建议是否开启 fetch。
+//! - `suggest`：拉取一个 feed，让 LLM 判断条目是否完整文章、建议是否开启 fetch；
+//! - `discover`：从网页 HTML 发现 feed 候选并逐个验证。
 
 mod channel;
 mod clients;
 mod config;
 mod db;
+mod discover;
 mod legacy;
 mod llm;
 mod migrate;
@@ -70,6 +72,11 @@ enum Command {
         #[arg(long, default_value_t = 5)]
         count: usize,
     },
+    /// 从网页 HTML 发现 feed 候选并逐个验证
+    Discover {
+        /// 网页地址
+        url: String,
+    },
 }
 
 #[tokio::main]
@@ -92,6 +99,7 @@ async fn main() -> Result<()> {
         Command::Migrate { from } => migrate::run(&config, &from).await?,
         Command::Status { json } => status::run(&config, json).await?,
         Command::Suggest { url, count } => suggest::run(&config, &url, count).await?,
+        Command::Discover { url } => discover::run(&config, &url).await?,
     }
     Ok(())
 }
