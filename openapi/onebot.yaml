@@ -1,0 +1,101 @@
+openapi: 3.0.3
+info:
+  title: OneBot 11 HTTP API subset used by rss-to-feishu
+  version: "1.0"
+  description: >
+    OneBot 11 实现的 HTTP API（go-cqhttp / NapCat / LLOneBot 的 http 模式）：
+    发群聊与私聊消息。access_token 走 Bearer 头。
+paths:
+  /send_group_msg:
+    post:
+      operationId: sendGroupMsg
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendGroupMsgRequest"
+      responses:
+        "2XX":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse"
+        default:
+          description: error
+          x-error: true
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse"
+  /send_private_msg:
+    post:
+      operationId: sendPrivateMsg
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendPrivateMsgRequest"
+      responses:
+        "2XX":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse"
+        default:
+          description: error
+          x-error: true
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse"
+components:
+  schemas:
+    SendGroupMsgRequest:
+      type: object
+      required: [group_id, message, auto_escape]
+      properties:
+        group_id:
+          type: integer
+          format: int64
+          description: 群号。
+        message:
+          type: string
+          description: 要发送的文本。
+        auto_escape:
+          type: boolean
+          description: 作为纯文本发送（不解析 CQ 码）。
+    SendPrivateMsgRequest:
+      type: object
+      required: [user_id, message, auto_escape]
+      properties:
+        user_id:
+          type: integer
+          format: int64
+          description: 对方 QQ 号。
+        message:
+          type: string
+          description: 要发送的文本。
+        auto_escape:
+          type: boolean
+          description: 作为纯文本发送（不解析 CQ 码）。
+    ApiResponse:
+      type: object
+      required: [status, retcode]
+      properties:
+        status:
+          type: string
+          description: ok 表示成功。
+        retcode:
+          type: integer
+          format: int64
+          description: 0 表示成功；NapCat 对内部异常统一回 200，原因见 message。
+        message:
+          type: string
+          description: 失败原因（NapCat 会放异常堆栈）。
+        wording:
+          type: string
+          description: 失败原因的人类可读版。

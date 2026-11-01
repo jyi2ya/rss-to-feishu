@@ -76,6 +76,16 @@ pub struct AddData {
     pub is_direct: Option<BoolOrInt>,
     #[serde(default)]
     pub source_tags: Option<String>,
+    #[serde(default)]
+    pub enqueued_at: Option<String>,
+    #[serde(default)]
+    pub llm_title: Option<String>,
+    #[serde(default)]
+    pub llm_summary: Option<String>,
+    #[serde(default)]
+    pub llm_tags: Option<TagsText>,
+    #[serde(default)]
+    pub sent_at: Option<String>,
 }
 
 /// update 事件的 data。
@@ -87,15 +97,24 @@ pub struct UpdateData {
     #[serde(default)]
     pub llm_summary: Option<String>,
     #[serde(default)]
-    pub llm_tags: Option<Vec<String>>,
+    pub llm_tags: Option<TagsText>,
 }
 
-/// 旧库的 is_direct 有布尔和整数两种写法。
+/// 旧库的 is_direct 有布尔、整数和字符串三种写法。
 #[derive(Debug, serde::Deserialize)]
 #[serde(untagged)]
 pub enum BoolOrInt {
     Bool(bool),
     Int(i64),
+    Text(String),
+}
+
+/// 旧库的 llm_tags 有 JSON 数组和竖线分隔字符串两种写法。
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+pub enum TagsText {
+    List(Vec<String>),
+    Text(String),
 }
 
 /// 读取 `db.jsonl` 事件日志。

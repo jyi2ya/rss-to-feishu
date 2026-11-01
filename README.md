@@ -8,7 +8,7 @@
 - **`sync`**：并发抓取配置里的订阅源（feed-rs 解析 RSS/Atom/JSON Feed），新条目入 sqlite；
 - **`push`**：取 pending 条目，`fetch = true` 的源先经网页抓取服务（DeepSeek Search API 的 Fetch 工具）抓网页正文，再用 rig 做结构化提取（标题/摘要/标签），推送到飞书；
 - **`migrate`**：把旧版 db（`db/*.csv` + `db.jsonl`，含 `GZ:` 压缩字段）迁进 sqlite，并打印旧订阅源对应的 `[feeds]` TOML 片段；
-- 飞书渠道是配置数组：`tenant`（自建应用，用环境变量里的 tenant_access_token 发消息，不调登录接口）或 `webhook`（群机器人），带标签白名单；
+- 推送渠道是配置数组：`tenant`（飞书自建应用，用环境变量里的 tenant_access_token 发消息，不调登录接口）、`webhook`（飞书群机器人）或 `onebot`（OneBot 11 HTTP API，群聊/私聊），带标签白名单；
 - HTTP 请求约束：网页抓取接口（DeepSeek Search API 的 Fetch 工具，base_url 可配官方或本地兼容实现）与飞书群消息接口都写成 OpenAPI 放在 `openapi/` 下，经 progenitor 在编译期生成客户端。
 
 ## 构建
@@ -25,7 +25,7 @@ cargo build --release
 - `[llm]`：OpenAI 兼容接口的 `api_base` / `api_key` / `model`（必填）；
 - `[fetch]`：网页抓取服务的 `base_url` 与可选 `api_key`（指向官方 API 时必填）；
 - `[sync]`：`concurrency`（默认 8）、`timeout_secs`（默认 60）、`proxy`（缺省回退 `https_proxy`/`http_proxy` 环境变量）；
-- `[[channels]]`：渠道数组。`type = "tenant"` 配 `token_env`（存 tenant_access_token 的环境变量名）/`chat_id`；`type = "webhook"` 配 `url`。`tags` 是白名单：非空时只收含这些标签（任一命中）的条目，为空兜底收全部；
+- `[[channels]]`：渠道数组。`type = "tenant"` 配 `token_env`（存 tenant_access_token 的环境变量名）/`chat_id`；`type = "webhook"` 配 `url`；`type = "onebot"` 配 `url`/`groups`/`privates`（可选 `token_env`）。`tags` 是白名单：非空时只收含这些标签（任一命中）的条目，为空兜底收全部；
 - `[[feeds]]`：订阅源数组，每个源有 `url`、`tags`、`fetch`（正文直读，缺省 false）。
 
 渠道按数组顺序取**首个**白名单命中的发送，空白名单渠道放最后即可兜底。
@@ -82,3 +82,4 @@ rss-to-feishu --config config.toml discover "https://example.com/"
 
 | Fetch 工具客户端 | [progenitor](https://crates.io/crates/progenitor)（spec 见 `openapi/search.yaml`） |
 | 飞书群消息客户端 | [progenitor](https://crates.io/crates/progenitor)（spec 见 `openapi/feishu.yaml`） |
+| OneBot 11 HTTP API 客户端 | [progenitor](https://crates.io/crates/progenitor)（spec 见 `openapi/onebot.yaml`） |

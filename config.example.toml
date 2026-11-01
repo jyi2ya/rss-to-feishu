@@ -37,6 +37,16 @@ tags = []
 # base_url = "https://open.feishu.cn"
 
 # [[channels]]
+# name = "qq"
+# type = "onebot"
+# url = "http://127.0.0.1:5700"
+# groups = [10001, 10002]
+# privates = [20001]
+# # 本地服务未设鉴权时可省略；配置了就从该环境变量读 access_token
+# token_env = "ONEBOT_ACCESS_TOKEN"
+# tags = []
+
+# [[channels]]
 # name = "tech"
 # type = "tenant"
 # token_env = "FEISHU_TENANT_TOKEN"

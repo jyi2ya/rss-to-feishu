@@ -59,13 +59,14 @@ impl WebhookChannel {
 }
 
 impl ChannelImpl for WebhookChannel {
-    async fn send(&self, content_json: &str) -> Result<()> {
+    async fn send(&self, text: &str) -> Result<()> {
+        let content = serde_json::to_string(&TextContent { text })?;
         let response = self
             .http
             .post(self.url.as_str())
             .json(&WebhookMessage {
                 msg_type: "text",
-                content: content_json,
+                content: &content,
             })
             .send()
             .await
@@ -105,6 +106,12 @@ fn sign_webhook(url: &url::Url, secret: &str) -> url::Url {
         .append_pair("timestamp", &timestamp.to_string())
         .append_pair("sign", &sign);
     signed
+}
+
+/// 飞书 text 消息的 content 字段。
+#[derive(serde::Serialize)]
+struct TextContent<'a> {
+    text: &'a str,
 }
 
 /// 自定义机器人 webhook 请求体。

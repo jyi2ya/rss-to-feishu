@@ -120,8 +120,6 @@ async fn process_item(
         .map_err(ItemError::Fetch)?;
     let preview = summarizer.preview(&content).await.map_err(ItemError::Llm)?;
     let rendered = render_message(&preview, item);
-    let content_json = serde_json::to_string(&TextContent { text: &rendered })
-        .map_err(|e| ItemError::Other(anyhow::Error::new(e)))?;
 
     // 渠道按配置顺序取首个白名单命中的；白名单为空的渠道兜底。
     let prepared = prepared
@@ -136,7 +134,7 @@ async fn process_item(
 
     prepared
         .channel
-        .send(&content_json)
+        .send(&rendered)
         .await
         .map_err(ItemError::Send)?;
     info!("item {} sent to {}", item.id, prepared.config.name());
@@ -211,12 +209,6 @@ fn render_message(preview: &Preview, item: &PendingItem) -> String {
         pub_date.to_rfc3339(),
         link
     )
-}
-
-/// 文本消息 content 字段。
-#[derive(serde::Serialize)]
-struct TextContent<'a> {
-    text: &'a str,
 }
 
 /// ItemError 的状态字符串必须与 Status 枚举一致，防止两处漂移。

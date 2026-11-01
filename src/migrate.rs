@@ -127,14 +127,37 @@ fn apply_jsonl_add(
         entry.description_text = Some(legacy::decode_legacy_gz(raw));
     }
     fill(&mut entry.pub_date, data.pub_date.as_ref());
-    entry.fetch = match data.is_direct {
-        Some(BoolOrInt::Bool(value)) => Some(value),
-        Some(BoolOrInt::Int(value)) => Some(value == 1),
+    entry.fetch = match &data.is_direct {
+        Some(BoolOrInt::Bool(value)) => Some(*value),
+        Some(BoolOrInt::Int(value)) => Some(*value == 1),
+        Some(BoolOrInt::Text(value)) => {
+            Some(value.trim() == "1" || value.trim().eq_ignore_ascii_case("true"))
+        }
         None => None,
     };
     fill(&mut entry.source_tags, data.source_tags.as_ref());
+    // 早期版本的 add 事件把摘要与发送状态直接嵌在 data 里（没有单独的 update/send）。
+    fill(&mut entry.enqueued_at, data.enqueued_at.as_ref());
     if entry.enqueued_at.is_none() {
         entry.enqueued_at = time.map(epoch_to_rfc3339);
+    }
+    fill(&mut entry.llm_title, data.llm_title.as_ref());
+    fill(&mut entry.llm_summary, data.llm_summary.as_ref());
+    if let Some(tags) = &data.llm_tags {
+        entry.llm_tags = match tags {
+            legacy::TagsText::List(tags) => {
+                tags.iter().filter(|tag| !tag.is_empty()).cloned().collect()
+            }
+            legacy::TagsText::Text(raw) => raw
+                .split('|')
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_string)
+                .collect(),
+        };
+    }
+    if let Some(raw) = data.sent_at.as_deref().filter(|s| !s.trim().is_empty()) {
+        entry.sent = true;
+        entry.sent_at = Some(raw.to_string());
     }
 }
 
@@ -146,7 +169,16 @@ fn apply_jsonl_update(entries: &mut BTreeMap<String, LegacyEntry>, data: &legacy
     fill(&mut entry.llm_title, data.llm_title.as_ref());
     fill(&mut entry.llm_summary, data.llm_summary.as_ref());
     if let Some(tags) = &data.llm_tags {
-        entry.llm_tags = tags.iter().filter(|tag| !tag.is_empty()).cloned().collect();
+        entry.llm_tags = match tags {
+            legacy::TagsText::List(tags) => {
+                tags.iter().filter(|tag| !tag.is_empty()).cloned().collect()
+            }
+            legacy::TagsText::Text(raw) => raw
+                .split('|')
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_string)
+                .collect(),
+        };
     }
 }
 

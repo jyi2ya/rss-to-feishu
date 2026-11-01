@@ -50,7 +50,7 @@ pub struct TenantChannel {
 
 impl TenantChannel {
     fn new(config: &TenantConfig) -> Result<Self> {
-        let token = env_credential(&config.token_env)?;
+        let token = super::env_credential(&config.token_env)?;
         let base_url = config.base_url.clone().unwrap_or_else(|| {
             url::Url::parse("https://open.feishu.cn").expect("官方 base URL 是合法的常量")
         });
@@ -62,11 +62,12 @@ impl TenantChannel {
 }
 
 impl ChannelImpl for TenantChannel {
-    async fn send(&self, content_json: &str) -> Result<()> {
+    async fn send(&self, text: &str) -> Result<()> {
+        let content = serde_json::to_string(&TextContent { text })?;
         let body = crate::clients::feishu::types::CreateMessageRequest {
             receive_id: self.chat_id.clone(),
             msg_type: "text".to_string(),
-            content: content_json.to_string(),
+            content,
         };
         let response = self
             .client
@@ -88,12 +89,8 @@ impl ChannelImpl for TenantChannel {
     }
 }
 
-/// 从配置指定的环境变量读取凭据；未设置或为空时报错。
-fn env_credential(name: &str) -> Result<String> {
-    let value = std::env::var(name)
-        .with_context(|| format!("环境变量 {name} 未设置（tenant 渠道凭据从环境变量读取）"))?;
-    if value.trim().is_empty() {
-        anyhow::bail!("环境变量 {name} 为空");
-    }
-    Ok(value)
+/// 飞书 text 消息的 content 字段。
+#[derive(serde::Serialize)]
+struct TextContent<'a> {
+    text: &'a str,
 }
